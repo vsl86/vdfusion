@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>VDFusion</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <script>
+    // Browser Mock for Wails
+    if (!window.runtime) {
+      window.runtime = new Proxy({}, {
+        get: (target, prop) => {
+          if (prop === 'EventsOnMultiple') return () => () => { };
+          if (prop === 'EventsOn') return () => () => { };
+          return (...args) => { console.log('Mock Runtime:', prop, ...args); return Promise.resolve(); };
+        }
+      });
+    }
+  </script>
+</head>
+
+<body>
+  <div id="app"></div>
+  <script src="./src/main.js" type="module"></script>
+</body>
+
+</html>

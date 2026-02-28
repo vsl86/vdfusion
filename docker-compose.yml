@@ -1,0 +1,15 @@
+services:
+  vdf-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./storage:/app/storage
+      - /path/to/your/videos:/media:ro
+    environment:
+      - VDF_DB_PATH=/app/storage/vdf.db
+      - VDF_SERVER_ADDR=:8080
+      - VDF_LOG_LEVEL=info
+    restart: unless-stopped

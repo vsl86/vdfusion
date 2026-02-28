@@ -1,0 +1,278 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  docker:
+    name: Build & Push Docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        if: github.event_name != 'pull_request' && env.DH_USER != ''
+        uses: docker/login-action@v3
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME || 'vsl86' }}/vdfusion
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  wails-build:
+    name: Build Wails (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            name: windows-amd64
+            ext: .exe
+          # - os: macos-12 # Intel (macos-13 was reported unsupported)
+          #   platform: darwin/amd64
+          #   name: darwin-amd64
+          #   ext: ""
+          - os: macos-latest # arm64
+            platform: darwin/arm64
+            name: darwin-arm64
+            ext: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      # FFmpeg Dependencies for Go-Astiav (CGO)
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg pkg-config create-dmg dylibbundler
+
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          path-type: minimal
+          install: >-
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-gcc
+
+      - name: Configure FFmpeg Paths (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          # 1. Get absolute Windows paths for CGO and Wails
+          # Using cygpath inside the MSYS2 shell is the most reliable method
+          MINGW_ROOT=$(cygpath -w /mingw64 | sed 's/\\/\//g')
+          PKG_CONFIG_BIN=$(which pkg-config | xargs cygpath -w | sed 's/\\/\//g')
+          
+          echo "Discovered MINGW_ROOT: $MINGW_ROOT"
+          echo "Discovered PKG_CONFIG: $PKG_CONFIG_BIN"
+          
+          # 2. Export to GITHUB_ENV for subsequent steps (Wails build)
+          echo "PKG_CONFIG=$PKG_CONFIG_BIN" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$MINGW_ROOT/lib/pkgconfig" >> $GITHUB_ENV
+          echo "CGO_CFLAGS=-I$MINGW_ROOT/include" >> $GITHUB_ENV
+          echo "CGO_LDFLAGS=-L$MINGW_ROOT/lib" >> $GITHUB_ENV
+          
+          # 3. Add Mingw64 bin to PATH so Wails can find DLLs for probe/test
+          echo "$MINGW_ROOT/bin" >> $GITHUB_PATH
+          
+          # 4. Verify
+          "$PKG_CONFIG_BIN" --version
+          "$PKG_CONFIG_BIN" --cflags -- libavcodec
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Wails App
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          if [ "${{ runner.os }}" == "macOS" ]; then
+            # Build produces .app bundle by default for darwin
+            wails build -platform ${{ matrix.platform }}
+          else
+            wails build -platform ${{ matrix.platform }} -o vdfusion-${{ matrix.name }}${{ matrix.ext }}
+          fi
+
+      # --- macOS Portability (Bundle Dylibs) ---
+      - name: Bundle Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
+          BINARY_PATH="$APP_PATH/Contents/MacOS/$(basename "$APP_PATH" .app)"
+          echo "Bundling dylibs for $BINARY_PATH"
+          
+          # Create Frameworks dir if it doesn't exist
+          mkdir -p "$APP_PATH/Contents/Frameworks"
+          
+          # Bundle dylibs using dylibbundler
+          # -of: overwrite files
+          # -cd: create destination directory
+          # -b: bundle libs
+          # -x: executable path
+          # -d: destination directory for libs
+          # -p: rpath
+          dylibbundler -of -cd -b -x "$BINARY_PATH" -d "$APP_PATH/Contents/Frameworks/" -p "@executable_path/../Frameworks/"
+
+      # --- macOS Code Signing & Notarization ---
+      - name: Check for macOS Secrets
+        if: runner.os == 'macOS'
+        id: secrets-check
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          AID: ${{ secrets.APPLE_ID }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "has_cert=true" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "$AID" ]; then
+            echo "has_apple_id=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Import macOS Certificates
+        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_cert == 'true'
+        env:
+          APPLE_CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: "wails-keychain-pwd"
+        run: |
+          echo $APPLE_CERT | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERT_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" build.keychain
+          rm certificate.p12
+
+      - name: Code Sign (macOS)
+        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_cert == 'true'
+        env:
+          APPLE_CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Sign the .app bundle
+          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
+          echo "Signing $APP_PATH"
+          codesign --force --options runtime --entitlements build/darwin/entitlements.plist --sign "Developer ID Application" --deep "$APP_PATH"
+
+      - name: Create DMG (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
+          APP_NAME=$(basename "$APP_PATH" .app)
+          create-dmg \
+            --volname "${APP_NAME}" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "${APP_NAME}.app" 175 120 \
+            --hide-extension "${APP_NAME}.app" \
+            --app-drop-link 425 120 \
+            "build/bin/${APP_NAME}.dmg" \
+            "$APP_PATH"
+
+      - name: Notarize and Staple (macOS)
+        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_apple_id == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Use the DMG created in the previous step
+          DMG_PATH=$(ls build/bin/*.dmg | head -n 1)
+          echo "Notarizing DMG: $DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" --team-id "$TEAM_ID" --wait
+          echo "Stapling $DMG_PATH"
+          xcrun stapler staple "$DMG_PATH"
+
+      - name: Zip App Bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd build/bin
+          APP_NAME=$(ls -d *.app | head -n 1)
+          zip -r "${APP_NAME%.app}.zip" "$APP_NAME"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vdfusion-${{ matrix.name }}
+          path: |
+            build/bin/*.exe
+            build/bin/*.dmg
+            build/bin/*.zip
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker, wails-build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-bins
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-bins/**/*.{exe,dmg,zip}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
