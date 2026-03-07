@@ -11,6 +11,7 @@ jobs:
   docker:
     name: Build & Push Docker
     runs-on: ubuntu-latest
+    needs: [test]
     permissions:
       contents: read
       packages: write
@@ -59,11 +60,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  build:
-    name: Build All Artifacts
+  # Unified build and test job for Pull Requests
+  test:
+    name: Test & Verify
     runs-on: macos-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,6 +85,44 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
+      - name: Run Go Tests
+        run: go test -v ./...
+
+      - name: Verify Build (No Obfuscation)
+        run: |
+          # Just verify it compiles on the host platform (darwin)
+          wails build
+
+  build:
+    name: Build All Artifacts
+    runs-on: macos-latest
+    needs: [test]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install System Dependencies
+        run: |
+          brew install nsis dylibbundler create-dmg pkg-config ffmpeg mingw-w64 p7zip
+
+      - name: Install Wails & Garble
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@latest
+          go install mvdan.cc/garble@latest
+
       - name: Setup Windows FFmpeg Headers/Libs (for CGO)
         run: |
           # Download shared/dev builds for Windows cross-compilation
@@ -103,21 +141,15 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           # 1. Build macOS (ARM64 & AMD64)
-          # Note: Wails produces .app bundles on Mac
           wails build -obfuscated -platform darwin/arm64,darwin/amd64
           
-          # 2. Build Windows (AMD64) with cross-compilation
-          # We use x86_64-w64-mingw32-gcc provided by brew
+          # 2. Build Windows (AMD64)
           CGO_ENABLED=1 \
           CC=x86_64-w64-mingw32-gcc \
           CXX=x86_64-w64-mingw32-g++ \
           CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
           CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
           wails build -obfuscated -nsis -webview2=embed -platform windows/amd64
-          
-          # 3. Windows ARM64 (Best effort without a full toolchain on Mac)
-          # If this fails, we might need a separate job, but let's try.
-          # Note: ARM64 MinGW is harder on Mac. Skipping for now or using separate job if needed.
 
       # --- macOS specific processing continues ---
       - name: Bundle Dylibs (macOS)
