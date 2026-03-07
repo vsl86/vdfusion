@@ -229,3 +229,26 @@ export namespace main {
 
 }
 
+export namespace media {
+	
+	export class DependencyStatus {
+	    ffmpeg: boolean;
+	    ffprobe: boolean;
+	    ffplay: boolean;
+	    missing: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DependencyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ffmpeg = source["ffmpeg"];
+	        this.ffprobe = source["ffprobe"];
+	        this.ffplay = source["ffplay"];
+	        this.missing = source["missing"];
+	    }
+	}
+
+}
+

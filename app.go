@@ -19,6 +19,7 @@ import (
 	"vdfusion/internal/engine"
 	"vdfusion/internal/media"
 	"vdfusion/internal/syslog"
+	"vdfusion/internal/utils"
 )
 
 // App struct
@@ -211,14 +212,14 @@ func (a *App) GetThumbnails(path string, duration float64, count int) ([]string,
 func (a *App) OpenFile(path string) error {
 	log.Printf("App: Opening file %s", path)
 	// Try ffplay first for better preview control
-	err := exec.Command("ffplay", "-i", path, "-autoexit", "-nodisp").Start()
+	err := exec.Command(utils.Resolve("ffplay"), "-i", path, "-autoexit", "-nodisp").Start()
 	if err == nil {
 		log.Printf("App: ffplay started")
 		return nil
 	}
 	log.Printf("App: ffplay failed: %v, falling back to open", err)
 	// Fallback to Mac 'open'
-	return exec.Command("open", path).Run()
+	return exec.Command(utils.Resolve("open"), path).Run()
 }
 
 func (a *App) RenameFile(oldPath string, newPath string) error {
@@ -419,4 +420,18 @@ func (a *App) ImportDB() error {
 	a.resultsManager = resultsManager
 
 	return nil
+}
+
+func (a *App) CheckDependencies() media.DependencyStatus {
+	return media.CheckDependencies()
+}
+
+func (a *App) DownloadDependencies() error {
+	a.reporter.BroadcastLog("info", "Starting FFmpeg auto-download...")
+	return media.DownloadDependencies(a.ctx, func(msg string, progress float64) {
+		runtime.EventsEmit(a.ctx, "download_progress", map[string]any{
+			"message":  msg,
+			"progress": progress,
+		})
+	})
 }

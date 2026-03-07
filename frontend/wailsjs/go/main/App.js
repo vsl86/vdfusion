@@ -6,6 +6,10 @@ export function BroadcastSystemLog(arg1) {
   return window['go']['main']['App']['BroadcastSystemLog'](arg1);
 }
 
+export function CheckDependencies() {
+  return window['go']['main']['App']['CheckDependencies']();
+}
+
 export function CleanupDB() {
   return window['go']['main']['App']['CleanupDB']();
 }
@@ -16,6 +20,10 @@ export function DeleteFiles(arg1) {
 
 export function DeleteIgnoredGroup(arg1) {
   return window['go']['main']['App']['DeleteIgnoredGroup'](arg1);
+}
+
+export function DownloadDependencies() {
+  return window['go']['main']['App']['DownloadDependencies']();
 }
 
 export function ExcludeGroup(arg1, arg2) {

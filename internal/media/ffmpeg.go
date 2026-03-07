@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"vdfusion/internal/utils"
 )
 
 // ExtractGray32x32 extracts a single frame at the specified timestamp
 // and returns it as a 32x32 Gray8 raw buffer (1024 bytes).
 func ExtractGray32x32(ctx context.Context, filePath string, timestamp float64) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := exec.CommandContext(ctx, utils.Resolve("ffmpeg"),
 		"-ss", fmt.Sprintf("%f", timestamp),
 		"-i", filePath,
 		"-frames:v", "1",
@@ -71,7 +73,7 @@ func ExtractThumbnail(ctx context.Context, filePath string, timestamp float64, w
 		scaleArg = fmt.Sprintf("%d:-1", width)
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := exec.CommandContext(ctx, utils.Resolve("ffmpeg"),
 		"-ss", fmt.Sprintf("%f", timestamp),
 		"-i", filePath,
 		"-frames:v", "1",
@@ -101,7 +103,7 @@ func ExtractThumbnail(ctx context.Context, filePath string, timestamp float64, w
 func StreamTranscoded(ctx context.Context, filePath string) (io.ReadCloser, *exec.Cmd, error) {
 	// We use fragmented MP4 for streaming via HTTP.
 	// -movflags frag_keyframe+empty_moov+default_base_moof allows streaming without a seekable output.
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := exec.CommandContext(ctx, utils.Resolve("ffmpeg"),
 		"-i", filePath,
 		"-c:v", "libx264",
 		"-preset", "veryfast",

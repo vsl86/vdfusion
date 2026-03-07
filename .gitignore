@@ -35,4 +35,3 @@ build/bin
 node_modules
 frontend/dist
 storage
-build

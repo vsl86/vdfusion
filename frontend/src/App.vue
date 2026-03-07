@@ -129,6 +129,49 @@
               <h3>Ready to Scan</h3>
               <p>Add some folders in settings and click "Start New Scan" to begin.</p>
             </div>
+
+            <!-- Missing Dependencies Alert -->
+            <div v-if="dependencies.missing && !downloading" class="card warning-card">
+              <div class="card-body">
+                <div class="summary-header">
+                  <div class="summary-icon">🛠️</div>
+                  <div class="summary-title">Missing Dependencies</div>
+                </div>
+                <p>VDFusion requires <strong>FFmpeg</strong> binaries for video processing, streaming, and external player support.</p>
+                <div class="tools-status">
+                  <span :class="{ 'text-success': dependencies.ffmpeg, 'text-danger': !dependencies.ffmpeg }">
+                    • FFmpeg: {{ dependencies.ffmpeg ? 'Ready' : 'Missing' }}
+                  </span>
+                  <span :class="{ 'text-success': dependencies.ffprobe, 'text-danger': !dependencies.ffprobe }">
+                    • FFprobe: {{ dependencies.ffprobe ? 'Ready' : 'Missing' }}
+                  </span>
+                  <span :class="{ 'text-success': dependencies.ffplay, 'text-danger': !dependencies.ffplay }">
+                    • FFplay: {{ dependencies.ffplay ? 'Ready' : 'Missing' }}
+                  </span>
+                </div>
+                <div class="suspicious-actions" style="margin-top: 15px">
+                  <button class="action-btn primary" @click="startDownload">
+                    Install Automatically
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Download Progress Overlay -->
+            <div v-if="downloading" class="card info-card">
+              <div class="card-body">
+                <div class="summary-header">
+                  <div class="summary-icon">📥</div>
+                  <div class="summary-title">{{ downloadProgress.message || 'Starting Download...' }}</div>
+                </div>
+                <div class="download-progress-container">
+                  <div class="download-progress-bar" :style="{ width: (downloadProgress.progress * 100) + '%' }"></div>
+                </div>
+                <p class="text-muted" style="font-size: 12px; margin-top: 10px; text-align: center;">
+                  {{ Math.round(downloadProgress.progress * 100) }}%
+                </p>
+              </div>
+            </div>
           </div>
 
           <div class="sidebar-settings">
@@ -182,7 +225,7 @@
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
-import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats } from './api'
+import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats, CheckDependencies, DownloadDependencies } from './api'
 
 import ScanSettings from './components/ScanSettings.vue'
 import ProgressBar from './components/ProgressBar.vue'
@@ -207,6 +250,10 @@ const previewPath = ref(null)
 const suspiciousFiles = ref([])
 const showSuspiciousExpanded = ref(false)
 const totalSelectionCount = ref(0)
+const dependencies = ref({ ffmpeg: true, ffprobe: true, ffplay: true, missing: false })
+const downloading = ref(false)
+const downloadProgress = ref({ message: '', progress: 0 })
+const isWails = !!window.go
 
 const stats = ref({
   total_files: 0,
@@ -404,7 +451,41 @@ onMounted(async () => {
       scanning.value = true
     }
   })
+
+  EventsOn('download_progress', (data) => {
+    downloadProgress.value = data
+  })
+
+  if (isWails) {
+    checkDeps()
+  }
 })
+
+const checkDeps = async () => {
+  try {
+    const status = await CheckDependencies()
+    dependencies.value = status
+  } catch (e) {
+    console.error('Failed to check dependencies', e)
+  }
+}
+
+const startDownload = async () => {
+  downloading.value = true
+  try {
+    await DownloadDependencies()
+    await checkDeps()
+  } catch (e) {
+    console.error('Download failed', e)
+    showModal({
+      title: 'Download Failed',
+      message: 'FFmpeg download failed. Please check your internet connection or install FFmpeg manually.',
+      type: 'alert'
+    })
+  } finally {
+    downloading.value = false
+  }
+}
 
 const formatSize = (bytes) => {
   if (!bytes) return '0 B'
@@ -653,6 +734,51 @@ const copyToClipboard = (text) => {
 .action-btn.small {
   font-size: 12px;
   padding: 6px 12px;
+}
+
+/* Warning Card for Dependencies */
+.warning-card {
+  border: 1px solid var(--warning, #e8a83e);
+  background: rgba(232, 168, 62, 0.05);
+  margin-top: 16px;
+}
+
+.tools-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.text-success {
+  color: #28a745;
+}
+
+.text-danger {
+  color: #dc3545;
+}
+
+/* Info Card for Downloads */
+.info-card {
+  border: 1px solid var(--accent);
+  background: rgba(var(--accent-rgb, 52, 152, 219), 0.05);
+  margin-top: 16px;
+}
+
+.download-progress-container {
+  width: 100%;
+  height: 8px;
+  background: var(--surface-alt);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.download-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #5dade2);
+  transition: width 0.3s ease;
 }
 
 @media (max-width: 768px) {

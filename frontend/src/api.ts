@@ -211,3 +211,13 @@ export async function GetStats(): Promise<any> {
     if (isWails) return { total_files: 0, total_size: 0, total_duration: 0, suspicious_count: 0 };
     return fetch(`${apiBase}/api/stats`).then(r => r.json());
 }
+
+export async function CheckDependencies(): Promise<any> {
+    if (isWails) return WailsApp.CheckDependencies();
+    return { ffmpeg: true, ffprobe: true, ffplay: true, missing: false }; // Always true for web mode as we can't download
+}
+
+export async function DownloadDependencies(): Promise<void> {
+    if (isWails) return WailsApp.DownloadDependencies();
+    throw new Error('Download is only supported in desktop mode');
+}

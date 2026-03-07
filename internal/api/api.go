@@ -25,6 +25,7 @@ import (
 	"vdfusion/internal/db"
 	"vdfusion/internal/engine"
 	"vdfusion/internal/media"
+	"vdfusion/internal/utils"
 )
 
 type Server struct {
@@ -420,11 +421,11 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Attempting to open file: %s", body.Path)
 
 	// Try ffplay first
-	cmd := exec.Command("ffplay", "-i", body.Path, "-autoexit")
+	cmd := exec.Command(utils.Resolve("ffplay"), "-i", body.Path, "-autoexit")
 	if err := cmd.Start(); err != nil {
 		log.Printf("ffplay failed: %v, trying 'open'", err)
 		// Fallback to open
-		if err2 := exec.Command("open", body.Path).Run(); err2 != nil {
+		if err2 := exec.Command(utils.Resolve("open"), body.Path).Run(); err2 != nil {
 			log.Printf("open failed: %v", err2)
 			s.jsonError(w, fmt.Sprintf("Failed to open file: %v", err2), http.StatusInternalServerError)
 			return

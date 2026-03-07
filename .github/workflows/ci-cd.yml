@@ -59,25 +59,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  wails-build:
-    name: Build Wails (${{ matrix.platform }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows/amd64
-            name: windows-amd64
-            ext: .exe
-          # - os: macos-12 # Intel (macos-13 was reported unsupported)
-          #   platform: darwin/amd64
-          #   name: darwin-amd64
-          #   ext: ""
-          - os: macos-latest # arm64
-            platform: darwin/arm64
-            name: darwin-arm64
-            ext: ""
+  build:
+    name: Build All Artifacts
+    runs-on: macos-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,99 +78,68 @@ jobs:
         with:
           node-version: 18
 
-      # FFmpeg Dependencies for Go-Astiav (CGO)
-      - name: Install FFmpeg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg pkg-config create-dmg dylibbundler
-
-      - name: Setup MSYS2 (Windows)
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          path-type: minimal
-          install: >-
-            mingw-w64-x86_64-ffmpeg
-            mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-gcc
-
-      - name: Configure FFmpeg Paths (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
+      - name: Install System Dependencies
         run: |
-          # 1. Get absolute Windows paths for CGO and Wails
-          # Using cygpath inside the MSYS2 shell is the most reliable method
-          MINGW_ROOT=$(cygpath -w /mingw64 | sed 's/\\/\//g')
-          PKG_CONFIG_BIN=$(which pkg-config | xargs cygpath -w | sed 's/\\/\//g')
-          
-          echo "Discovered MINGW_ROOT: $MINGW_ROOT"
-          echo "Discovered PKG_CONFIG: $PKG_CONFIG_BIN"
-          
-          # 2. Export to GITHUB_ENV for subsequent steps (Wails build)
-          echo "PKG_CONFIG=$PKG_CONFIG_BIN" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$MINGW_ROOT/lib/pkgconfig" >> $GITHUB_ENV
-          echo "CGO_CFLAGS=-I$MINGW_ROOT/include" >> $GITHUB_ENV
-          echo "CGO_LDFLAGS=-L$MINGW_ROOT/lib" >> $GITHUB_ENV
-          
-          # 3. Add Mingw64 bin to PATH so Wails can find DLLs for probe/test
-          echo "$MINGW_ROOT/bin" >> $GITHUB_PATH
-          
-          # 4. Verify
-          "$PKG_CONFIG_BIN" --version
-          "$PKG_CONFIG_BIN" --cflags -- libavcodec
+          brew install nsis dylibbundler create-dmg pkg-config ffmpeg mingw-w64 p7zip
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Build Wails App
+      - name: Setup Windows FFmpeg Headers/Libs (for CGO)
+        run: |
+          # Download shared/dev builds for Windows cross-compilation
+          curl -L https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z -o ffmpeg_shared.7z
+          7z x ffmpeg_shared.7z -offmpeg-win-x64
+          mv ffmpeg-win-x64/ffmpeg-*-shared ffmpeg-win-x64/dist
+          
+          # Setup PKG_CONFIG environment for cross-compilation to windows-amd64
+          # We'll need to manually set CGO flags for Wails to pick them up
+          echo "WINDOWS_AMD64_CGO_LDFLAGS=-L$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/lib" >> $GITHUB_ENV
+          echo "WINDOWS_AMD64_CGO_CFLAGS=-I$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/include" >> $GITHUB_ENV
+
+      - name: Build Wails (Multi-Platform)
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
-          if [ "${{ runner.os }}" == "macOS" ]; then
-            # Build produces .app bundle by default for darwin
-            wails build -platform ${{ matrix.platform }}
-          else
-            wails build -platform ${{ matrix.platform }} -o vdfusion-${{ matrix.name }}${{ matrix.ext }}
-          fi
+          # 1. Build macOS (ARM64 & AMD64)
+          # Note: Wails produces .app bundles on Mac
+          wails build -obfuscated -platform darwin/arm64,darwin/amd64
+          
+          # 2. Build Windows (AMD64) with cross-compilation
+          # We use x86_64-w64-mingw32-gcc provided by brew
+          CGO_ENABLED=1 \
+          CC=x86_64-w64-mingw32-gcc \
+          CXX=x86_64-w64-mingw32-g++ \
+          CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
+          CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
+          wails build -obfuscated -nsis -webview2=embed -platform windows/amd64
+          
+          # 3. Windows ARM64 (Best effort without a full toolchain on Mac)
+          # If this fails, we might need a separate job, but let's try.
+          # Note: ARM64 MinGW is harder on Mac. Skipping for now or using separate job if needed.
 
-      # --- macOS Portability (Bundle Dylibs) ---
-      - name: Bundle Dependencies (macOS)
-        if: runner.os == 'macOS'
+      # --- macOS specific processing continues ---
+      - name: Bundle Dylibs (macOS)
         run: |
-          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
-          BINARY_PATH="$APP_PATH/Contents/MacOS/$(basename "$APP_PATH" .app)"
-          echo "Bundling dylibs for $BINARY_PATH"
-          
-          # Create Frameworks dir if it doesn't exist
-          mkdir -p "$APP_PATH/Contents/Frameworks"
-          
-          # Bundle dylibs using dylibbundler
-          # -of: overwrite files
-          # -cd: create destination directory
-          # -b: bundle libs
-          # -x: executable path
-          # -d: destination directory for libs
-          # -p: rpath
-          dylibbundler -of -cd -b -x "$BINARY_PATH" -d "$APP_PATH/Contents/Frameworks/" -p "@executable_path/../Frameworks/"
+          for APP_PATH in build/bin/*.app; do
+            BINARY_PATH="$APP_PATH/Contents/MacOS/$(basename "$APP_PATH" .app)"
+            echo "Bundling dylibs for $BINARY_PATH"
+            mkdir -p "$APP_PATH/Contents/Frameworks"
+            dylibbundler -of -cd -b -x "$BINARY_PATH" -d "$APP_PATH/Contents/Frameworks/" -p "@executable_path/../Frameworks/"
+          done
 
-      # --- macOS Code Signing & Notarization ---
       - name: Check for macOS Secrets
-        if: runner.os == 'macOS'
         id: secrets-check
         env:
           CERT: ${{ secrets.MACOS_CERTIFICATE }}
           AID: ${{ secrets.APPLE_ID }}
         run: |
-          if [ -n "$CERT" ]; then
-            echo "has_cert=true" >> $GITHUB_OUTPUT
-          fi
-          if [ -n "$AID" ]; then
-            echo "has_apple_id=true" >> $GITHUB_OUTPUT
-          fi
+          if [ -n "$CERT" ]; then echo "has_cert=true" >> $GITHUB_OUTPUT; fi
+          if [ -n "$AID" ]; then echo "has_apple_id=true" >> $GITHUB_OUTPUT; fi
 
       - name: Import macOS Certificates
-        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_cert == 'true'
+        if: steps.secrets-check.outputs.has_cert == 'true'
         env:
           APPLE_CERT: ${{ secrets.MACOS_CERTIFICATE }}
           APPLE_CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -199,57 +154,47 @@ jobs:
           rm certificate.p12
 
       - name: Code Sign (macOS)
-        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_cert == 'true'
-        env:
-          APPLE_CERT: ${{ secrets.MACOS_CERTIFICATE }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        if: steps.secrets-check.outputs.has_cert == 'true'
         run: |
-          # Sign the .app bundle
-          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
-          echo "Signing $APP_PATH"
-          codesign --force --options runtime --entitlements build/darwin/entitlements.plist --sign "Developer ID Application" --deep "$APP_PATH"
+          for APP_PATH in build/bin/*.app; do
+            echo "Signing $APP_PATH"
+            codesign --force --options runtime --entitlements build/darwin/entitlements.plist --sign "Developer ID Application" --deep "$APP_PATH"
+          done
 
       - name: Create DMG (macOS)
-        if: runner.os == 'macOS'
         run: |
-          APP_PATH=$(ls -d build/bin/*.app | head -n 1)
-          APP_NAME=$(basename "$APP_PATH" .app)
-          create-dmg \
-            --volname "${APP_NAME}" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "${APP_NAME}.app" 175 120 \
-            --hide-extension "${APP_NAME}.app" \
-            --app-drop-link 425 120 \
-            "build/bin/${APP_NAME}.dmg" \
-            "$APP_PATH"
+          for APP_PATH in build/bin/*.app; do
+            APP_NAME=$(basename "$APP_PATH" .app)
+            create-dmg \
+              --volname "${APP_NAME}" --window-pos 200 120 --window-size 600 400 --icon-size 100 \
+              --icon "${APP_NAME}.app" 175 120 --hide-extension "${APP_NAME}.app" --app-drop-link 425 120 \
+              "build/bin/${APP_NAME}.dmg" "$APP_PATH"
+          done
 
       - name: Notarize and Staple (macOS)
-        if: runner.os == 'macOS' && steps.secrets-check.outputs.has_apple_id == 'true'
+        if: steps.secrets-check.outputs.has_apple_id == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Use the DMG created in the previous step
-          DMG_PATH=$(ls build/bin/*.dmg | head -n 1)
-          echo "Notarizing DMG: $DMG_PATH"
-          xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" --team-id "$TEAM_ID" --wait
-          echo "Stapling $DMG_PATH"
-          xcrun stapler staple "$DMG_PATH"
+          for DMG_PATH in build/bin/*.dmg; do
+            echo "Notarizing DMG: $DMG_PATH"
+            xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" --team-id "$TEAM_ID" --wait
+            xcrun stapler staple "$DMG_PATH"
+          done
 
-      - name: Zip App Bundle (macOS)
-        if: runner.os == 'macOS'
+      - name: Zip App Bundles (macOS)
         run: |
           cd build/bin
-          APP_NAME=$(ls -d *.app | head -n 1)
-          zip -r "${APP_NAME%.app}.zip" "$APP_NAME"
+          for APP_PATH in *.app; do
+            zip -r "${APP_PATH%.app}.zip" "$APP_PATH"
+          done
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vdfusion-${{ matrix.name }}
+          name: vdfusion-all-platforms
           path: |
             build/bin/*.exe
             build/bin/*.dmg
@@ -258,7 +203,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [docker, wails-build]
+    needs: [docker, build]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
