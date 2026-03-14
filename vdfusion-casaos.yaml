@@ -1,0 +1,43 @@
+name: vdfusion
+services:
+  main_app:
+    cpu_shares: 90
+    command: []
+    container_name: vdfusion
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    environment:
+      - VDF_DB_PATH=/storage/vdfusion.db
+      - VDF_LOG_LEVEL=info
+      - VDF_SERVER_ADDR=:8080
+    hostname: vdfusion
+    image: ghcr.io/vsl86/vdfusion:v0.9.9
+    labels:
+      icon: https://raw.githubusercontent.com/vsl86/vdfusion/refs/heads/main/vdfusion-logo.svg
+    ports:
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /DATA/AppData/vdfusion
+        target: /storage
+    devices: []
+    cap_add: []
+    network_mode: bridge
+    privileged: false
+x-casaos:
+  author: vsl86
+  category: media
+  hostname: ""
+  icon: https://raw.githubusercontent.com/vsl86/vdfusion/refs/heads/main/vdfusion-logo.svg
+  index: /
+  is_uncontrolled: false
+  port_map: "8080"
+  scheme: http
+  store_app_id: vdfusion
+  title:
+    custom: VDFusion

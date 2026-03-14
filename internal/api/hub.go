@@ -1,0 +1,84 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+type Hub struct {
+	clients   map[*client]struct{}
+	broadcast chan []byte
+	mu        sync.Mutex
+}
+
+type client struct {
+	conn *websocket.Conn
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		clients:   make(map[*client]struct{}),
+		broadcast: make(chan []byte, 100),
+	}
+}
+
+func (h *Hub) Run(ctx context.Context) {
+	for {
+		select {
+		case msg := <-h.broadcast:
+			h.mu.Lock()
+			for c := range h.clients {
+				err := c.conn.Write(ctx, websocket.MessageText, msg)
+				if err != nil {
+					log.Printf("WS write error: %v", err)
+					c.conn.Close(websocket.StatusNormalClosure, "")
+					delete(h.clients, c)
+				}
+			}
+			h.mu.Unlock()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (h *Hub) AddClient(conn *websocket.Conn) {
+	h.mu.Lock()
+	h.clients[&client{conn: conn}] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *Hub) BroadcastProgress(current, total int, phase string, lastFile string, durationSeconds, estimatedRemainingSeconds float64) {
+	msg, _ := json.Marshal(map[string]any{
+		"type":                        "progress",
+		"current":                     current,
+		"total":                       total,
+		"phase":                       phase,
+		"last_file":                   lastFile,
+		"duration_seconds":            durationSeconds,
+		"estimated_remaining_seconds": estimatedRemainingSeconds,
+	})
+	h.broadcast <- msg
+}
+
+func (h *Hub) BroadcastLog(severity, message string) {
+	msg, _ := json.Marshal(map[string]any{
+		"type":     "app_log",
+		"severity": severity,
+		"message":  message,
+		"time":     time.Now().Format("15:04:05"),
+	})
+	h.broadcast <- msg
+}
+func (h *Hub) BroadcastSystemLog(line string) {
+	msg, _ := json.Marshal(map[string]any{
+		"type": "system_log",
+		"line": line,
+	})
+	h.broadcast <- msg
+}

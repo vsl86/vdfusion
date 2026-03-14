@@ -1,0 +1,27 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "VDFusion",
+  "outputfilename": "vdfusion",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "vsl86",
+    "email": "sevikl@gmail.com"
+  },
+  "info": {
+    "productName": "VDFusion",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 vsl86",
+    "comments": "Video Duplicate Fusion tool"
+  },
+  "mac": {
+    "about": {
+      "title": "VDFusion",
+      "message": "Video Duplicate Fusion tool © 2026 vsl86",
+      "icon": "build/appicon.png"
+    }
+  },
+  "post:build": "codesign --force --deep --sign - build/bin/VDFusion.app"
+}

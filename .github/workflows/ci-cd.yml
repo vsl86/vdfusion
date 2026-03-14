@@ -1,0 +1,233 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    name: Test & Verify
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          if command -v brew >/dev/null 2>&1; then
+             for pkg in pkg-config ffmpeg; do
+               brew list $pkg >/dev/null 2>&1 || brew install $pkg
+             done
+          elif command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y pkg-config ffmpeg
+          fi
+
+      - name: Install Wails
+        run: command -v wails >/dev/null 2>&1 || go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Run Go Tests
+        run: go test -v ./...
+
+  docker:
+    name: Build & Push Docker
+    runs-on: [self-hosted, Linux, X64, casa]
+    needs: [test]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build:
+    name: Build All Artifacts
+    runs-on: [self-hosted, macOS, ARM64]
+    needs: [test]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          if command -v brew >/dev/null 2>&1; then
+             # Fast check for dependencies on Mac
+             for pkg in nsis dylibbundler create-dmg pkg-config ffmpeg mingw-w64 p7zip; do
+               brew list $pkg >/dev/null 2>&1 || brew install $pkg
+             done
+          fi
+
+      - name: Install Wails
+        run: command -v wails >/dev/null 2>&1 || go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Setup Windows FFmpeg Headers/Libs (for CGO)
+        run: |
+          curl -L https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full-shared.7z -o ffmpeg_shared.7z
+          7z x ffmpeg_shared.7z -offmpeg-win-x64
+          mv ffmpeg-win-x64/ffmpeg-*-shared ffmpeg-win-x64/dist
+          echo "WINDOWS_AMD64_CGO_LDFLAGS=-L$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/lib" >> $GITHUB_ENV
+          echo "WINDOWS_AMD64_CGO_CFLAGS=-I$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/include" >> $GITHUB_ENV
+
+      - name: Build Wails (Multi-Platform)
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          # 1. Build macOS (ARM64 & AMD64)
+          wails build -platform darwin/arm64
+
+          # 2. Build Windows (AMD64)
+          CGO_ENABLED=1 \
+          CC=x86_64-w64-mingw32-gcc \
+          CXX=x86_64-w64-mingw32-g++ \
+          CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
+          CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
+          wails build -nsis -webview2=embed -platform windows/amd64
+
+      - name: Bundle Dylibs (macOS)
+        run: |
+          for APP_PATH in build/bin/*.app; do
+            BINARY_PATH="$APP_PATH/Contents/MacOS/$(basename "$APP_PATH" .app)"
+            echo "Bundling dylibs for $BINARY_PATH"
+            mkdir -p "$APP_PATH/Contents/Frameworks"
+            dylibbundler -of -cd -b -x "$BINARY_PATH" -d "$APP_PATH/Contents/Frameworks/" -p "@executable_path/../Frameworks/"
+          done
+
+      - name: Check for macOS Secrets
+        id: secrets-check
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          AID: ${{ secrets.APPLE_ID }}
+        run: |
+          if [ -n "$CERT" ]; then echo "has_cert=true" >> $GITHUB_OUTPUT; fi
+          if [ -n "$AID" ]; then echo "has_apple_id=true" >> $GITHUB_OUTPUT; fi
+
+      - name: Import macOS Certificates
+        if: steps.secrets-check.outputs.has_cert == 'true'
+        env:
+          APPLE_CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: "wails-keychain-pwd"
+        run: |
+          echo $APPLE_CERT | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERT_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" build.keychain
+          rm certificate.p12
+
+      - name: Code Sign (macOS)
+        if: steps.secrets-check.outputs.has_cert == 'true'
+        run: |
+          for APP_PATH in build/bin/*.app; do
+            echo "Signing $APP_PATH"
+            codesign --force --options runtime --entitlements build/darwin/entitlements.plist --sign "Developer ID Application" --deep "$APP_PATH"
+          done
+
+      - name: Create DMG (macOS)
+        run: |
+          for APP_PATH in build/bin/*.app; do
+            APP_NAME=$(basename "$APP_PATH" .app)
+            create-dmg \
+              --volname "${APP_NAME}" --window-pos 200 120 --window-size 600 400 --icon-size 100 \
+              --icon "${APP_NAME}.app" 175 120 --hide-extension "${APP_NAME}.app" --app-drop-link 425 120 \
+              "build/bin/${APP_NAME}.dmg" "$APP_PATH"
+          done
+
+      - name: Notarize and Staple (macOS)
+        if: steps.secrets-check.outputs.has_apple_id == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for DMG_PATH in build/bin/*.dmg; do
+            echo "Notarizing DMG: $DMG_PATH"
+            xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" --team-id "$TEAM_ID" --wait
+            xcrun stapler staple "$DMG_PATH"
+          done
+
+      - name: Zip App Bundles (macOS)
+        run: |
+          cd build/bin
+          for APP_PATH in *.app; do
+            zip -r "${APP_PATH%.app}.zip" "$APP_PATH"
+          done
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vdfusion-all-platforms
+          path: |
+            build/bin/*.exe
+            build/bin/*.dmg
+            build/bin/*.zip
+
+  release:
+    name: Create GitHub Release
+    runs-on: [self-hosted, Linux, X64, casa]
+    needs: [docker, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-bins
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-bins/**/*.exe
+            release-bins/**/*.dmg
+            release-bins/**/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
