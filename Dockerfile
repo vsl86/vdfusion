@@ -15,7 +15,9 @@ RUN go mod download
 COPY . .
 # Ensure frontend/dist exists for embedding
 COPY --from=frontend-builder /app/dist ./frontend/dist
-RUN go build -o vdfusion .
+ARG VERSION=v0.0.0-dev
+ARG COMMIT=unknown
+RUN go build -ldflags "-X vdfusion/internal/version.Version=${VERSION} -X vdfusion/internal/version.Commit=${COMMIT}" -o vdfusion .
 
 # Stage 3: Runtime
 FROM alpine:3.23

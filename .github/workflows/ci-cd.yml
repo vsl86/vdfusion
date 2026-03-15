@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install System Dependencies
         run: |
@@ -50,6 +52,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -69,9 +73,20 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{raw}}
             type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set Version Info
+        id: versioning
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION=$(git describe --tags --always --dirty)
+          fi
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -81,6 +96,9 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.versioning.outputs.version }}
+            COMMIT=${{ steps.versioning.outputs.commit }}
 
   build:
     name: Build All Artifacts
@@ -92,6 +110,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install System Dependencies
         run: |
@@ -119,10 +139,19 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME}"
           else
-            VERSION="v0.0.0-latest"
+            VERSION=$(git describe --tags --always --dirty)
           fi
           COMMIT=$(git rev-parse --short HEAD)
+          
+          # For Windows/NSIS compatibility, strip 'v' and any git-describe/date suffixes
+          VERSION_NUMERIC=$(echo "${VERSION}" | sed -E 's/^v//; s/-.*//')
+          # If it's still not numeric (e.g. unknown), fallback to a safe default
+          if [[ ! $VERSION_NUMERIC =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            VERSION_NUMERIC="0.0.0"
+          fi
+
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_numeric=${VERSION_NUMERIC}" >> $GITHUB_OUTPUT
           echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
           # Also set for wails build to use
           echo "LDFLAGS=-X vdfusion/internal/version.Version=${VERSION} -X vdfusion/internal/version.Commit=${COMMIT}" >> $GITHUB_ENV
@@ -131,11 +160,37 @@ jobs:
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          FULL_VERSION: ${{ steps.versioning.outputs.version }}
+          NUMERIC_VERSION: ${{ steps.versioning.outputs.version_numeric }}
         run: |
+          # 0. Manually generate high-quality icons from appicon.png
+          echo "Generating macOS icon bundle..."
+          mkdir -p build/appicon.iconset
+          sips -z 16 16     build/appicon.png --out build/appicon.iconset/icon_16x16.png > /dev/null
+          sips -z 32 32     build/appicon.png --out build/appicon.iconset/icon_16x16@2x.png > /dev/null
+          sips -z 32 32     build/appicon.png --out build/appicon.iconset/icon_32x32.png > /dev/null
+          sips -z 64 64     build/appicon.png --out build/appicon.iconset/icon_32x32@2x.png > /dev/null
+          sips -z 128 128   build/appicon.png --out build/appicon.iconset/icon_128x128.png > /dev/null
+          sips -z 256 256   build/appicon.png --out build/appicon.iconset/icon_128x128@2x.png > /dev/null
+          sips -z 256 256   build/appicon.png --out build/appicon.iconset/icon_256x256.png > /dev/null
+          sips -z 512 512   build/appicon.png --out build/appicon.iconset/icon_256x256@2x.png > /dev/null
+          sips -z 512 512   build/appicon.png --out build/appicon.iconset/icon_512x512.png > /dev/null
+          cp build/appicon.png build/appicon.iconset/icon_512x512@2x.png
+          iconutil -c icns build/appicon.iconset --output build/darwin/icon.icns
+          rm -rf build/appicon.iconset
+          
+          rm -f build/windows/icon.ico
+
           # 1. Build macOS (ARM64 & AMD64)
+          # Patch wails.json with full 'v' version for Mac
+          sed -i.bak "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"$FULL_VERSION\"/" wails.json
+          
           wails build -ldflags "${{ env.LDFLAGS }}" -platform darwin/arm64
 
           # 2. Build Windows (AMD64)
+          # Patch wails.json with numeric version for Windows/NSIS
+          sed -i.bak "s/\"productVersion\": \".*\"/\"productVersion\": \"$NUMERIC_VERSION\"/" wails.json
+
           CGO_ENABLED=1 \
           CC=x86_64-w64-mingw32-gcc \
           CXX=x86_64-w64-mingw32-g++ \
