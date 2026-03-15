@@ -56,10 +56,16 @@
         <div class="status-item wails-indicator" v-if="isWails">
           <span class="indicator-dot online"></span>
           App <span class="version-tag">{{ appVersion }}</span>
+          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link" title="A new version is available!">
+            🚀 New Version
+          </a>
         </div>
         <div class="status-item wails-indicator" v-else>
           <span class="indicator-dot web"></span>
           Web UI <span class="version-tag">{{ appVersion }}</span>
+          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link" title="A new version is available!">
+            🚀 New Version
+          </a>
         </div>
         <!-- Mobile Scanning Pulse -->
         <div v-if="scanning" class="scanning-pulse-mobile" title="Scan in progress">
@@ -93,7 +99,7 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
-import { EventsOn, GetDebugInfo, GetActivityHistory, ClearPersistedLogs } from '../api'
+import { EventsOn, GetDebugInfo, GetActivityHistory, ClearPersistedLogs, CheckForUpdates } from '../api'
 import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 
 const props = defineProps({
@@ -109,6 +115,7 @@ const isWails = !!window.go
 const showLogs = ref(false)
 const appLogs = ref([])
 const appVersion = ref('...')
+const updateAvailable = ref(null)
 const logsEndRef = ref(null)
 let unlistenLog = null
 
@@ -145,6 +152,16 @@ onMounted(async () => {
     }
   } catch (e) {
     console.warn('StatusLine: Failed to load log history', e)
+  }
+
+  // Check for updates
+  try {
+    const res = await CheckForUpdates()
+    if (res.update_available) {
+      updateAvailable.value = res
+    }
+  } catch (e) {
+    console.warn('StatusLine: Failed to check for updates', e)
   }
 
   unlistenLog = EventsOn('app_log', (data) => {
@@ -419,6 +436,28 @@ const reportBug = async () => {
   opacity: 0.5;
   font-family: ui-monospace, monospace;
   font-size: 10px;
+}
+
+.update-link {
+  color: #fbbf24;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 10px;
+  animation: pulse-update 2s infinite;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.update-link:hover {
+  text-decoration: underline;
+  color: #fff;
+}
+
+@keyframes pulse-update {
+  0% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.7; transform: scale(1); }
 }
 
 .bug-btn {

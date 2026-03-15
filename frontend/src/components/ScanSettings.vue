@@ -38,10 +38,23 @@
         <h1>Settings</h1>
         <p>Configure scan behaviour, thresholds, and filters.</p>
       </div>
-      <button class="action-btn primary" :class="{ success: saveSuccess }"
-        style="min-width: 120px; transition: all 0.3s ease;" :disabled="!isDirty || saveSuccess" @click="save">
-        {{ saveSuccess ? '✓ Saved' : 'Save' }}
-      </button>
+      <div style="text-align: right;">
+        <button class="action-btn primary" :class="{ success: saveSuccess }"
+          style="min-width: 120px; transition: all 0.3s ease;" :disabled="!isDirty || saveSuccess" @click="save">
+          {{ saveSuccess ? '✓ Saved' : 'Save' }}
+        </button>
+        <div v-if="versionInfo" class="version-display" style="margin-top: 8px; font-size: 11px; color: var(--text-muted);">
+          Version: {{ versionInfo.current }}
+          <button class="check-update-btn" @click="checkUpdates" :disabled="updateLoading" style="margin-left: 8px; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; cursor: pointer; color: var(--text-muted);">
+            {{ updateLoading ? '...' : 'Check Updates' }}
+          </button>
+          <div v-if="updateAvailable" style="margin-top: 6px;">
+            <a :href="updateAvailable.url" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 600;">
+              🚀 Update Available: {{ updateAvailable.latest }}
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="card mb-3">
@@ -241,7 +254,7 @@
       </div>
     </div>
 
-    <button class="bl-del-btn danger" style="width:100%; margin-top: 10px; padding: 12px; font-weight: 600;"
+    <button class="bl-del-btn danger" style="width:100%; margin-top: 10px; margin-bottom: 24px; padding: 12px; font-weight: 600;"
       @click="resetToDefaults">
       Reset Settings to Defaults
     </button>
@@ -287,7 +300,7 @@
 
 <script setup>
 import { ref, onMounted, computed, inject } from 'vue'
-import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo } from '../api'
+import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates } from '../api'
 import NumberInput from './NumberInput.vue'
 import DirPicker from './DirPicker.vue'
 import PathInput from './PathInput.vue'
@@ -330,6 +343,27 @@ const connectionConfig = ref(getConnectionConfig())
 const baseConnConfigStr = ref(JSON.stringify(connectionConfig.value))
 const testLoading = ref(false)
 const testResult = ref(null)
+const versionInfo = ref(null)
+const updateLoading = ref(false)
+const updateAvailable = ref(null)
+
+const checkUpdates = async () => {
+  updateLoading.value = true
+  try {
+    const res = await CheckForUpdates()
+    versionInfo.value = res
+    if (res.update_available) {
+      updateAvailable.value = res
+    } else {
+      updateAvailable.value = null
+      showModal({ title: 'Up to Date', message: 'You are running the latest version.', type: 'alert' })
+    }
+  } catch (e) {
+    console.error('Failed to check updates', e)
+  } finally {
+    updateLoading.value = false
+  }
+}
 
 const connDirty = computed(() => {
   return JSON.stringify(connectionConfig.value) !== baseConnConfigStr.value
@@ -409,16 +443,16 @@ const newBL = ref('')
 
 onMounted(async () => {
   refresh()
+  try {
+    const info = await GetDebugInfo()
+    versionInfo.value = { current: info.version }
+  } catch (e) {}
 })
 
 const refresh = async () => {
   try {
     const s = await GetSettings()
     if (s) {
-      // Compatibility for older settings lacking the new properties
-      if (s.filter_by_duration === undefined) {
-          s.filter_by_duration = s.duration_difference_max_seconds < 3600
-      }
       settings.value = s
       baseSettings.value = JSON.parse(JSON.stringify(s))
     }

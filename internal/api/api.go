@@ -95,6 +95,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/suspicious-files", s.handleGetSuspiciousFiles)
 		r.Get("/stats", s.handleGetStats)
 		r.Get("/debug", s.handleGetDebugInfo)
+		r.Get("/updates/check", s.handleCheckUpdates)
 	})
 
 	// Static assets (built frontend)
@@ -627,6 +628,67 @@ func (s *Server) quietLogger(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(ww, r)
 	})
+}
+
+func (s *Server) handleCheckUpdates(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/vsl86/vdfusion/releases/latest")
+	if err != nil {
+		s.jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		s.jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"current":          version.Version,
+		"latest":           release.TagName,
+		"url":              release.HTMLURL,
+		"notes":            release.Body,
+		"update_available": s.isNewer(version.Version, release.TagName),
+	})
+}
+
+func (s *Server) isNewer(current, latest string) bool {
+	if current == "v0.0.0-dev" {
+		return latest != "v0.0.0" && latest != ""
+	}
+
+	parse := func(v string) [3]int {
+		v = strings.TrimPrefix(v, "v")
+		parts := strings.Split(v, ".")
+		var res [3]int
+		for i := 0; i < len(parts) && i < 3; i++ {
+			clean := parts[i]
+			if idx := strings.Index(clean, "-"); idx != -1 {
+				clean = clean[:idx]
+			}
+			fmt.Sscanf(clean, "%d", &res[i])
+		}
+		return res
+	}
+
+	c := parse(current)
+	l := parse(latest)
+	for i := 0; i < 3; i++ {
+		if l[i] > c[i] {
+			return true
+		}
+		if l[i] < c[i] {
+			return false
+		}
+	}
+	return false
 }
 
 func (s *Server) Start(addr string) error {

@@ -365,11 +365,13 @@ func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cf
 
 func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Settings) float64 {
 	tolerance := duration * (cfg.PercentDurationDifference / 100.0)
-	if cfg.DurationDifferenceMinSec > 0 {
-		tolerance = math.Max(tolerance, cfg.DurationDifferenceMinSec)
-	}
-	if cfg.DurationDifferenceMaxSec > 0 {
-		tolerance = math.Min(tolerance, cfg.DurationDifferenceMaxSec)
+	if cfg.FilterByDuration {
+		if cfg.DurationDifferenceMinSec > 0 {
+			tolerance = math.Max(tolerance, cfg.DurationDifferenceMinSec)
+		}
+		if cfg.DurationDifferenceMaxSec > 0 {
+			tolerance = math.Min(tolerance, cfg.DurationDifferenceMaxSec)
+		}
 	}
 	return tolerance
 }
