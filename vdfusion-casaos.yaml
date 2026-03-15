@@ -33,7 +33,7 @@ x-casaos:
   author: vsl86
   category: media
   hostname: ""
-  icon: https://raw.githubusercontent.com/vsl86/vdfusion/refs/heads/main/vdfusion-logo.svg
+  icon: https://raw.githubusercontent.com/vsl86/vdfusion/dff56dfd6520961a31a7eb97b947c3821bad8033/vdfusion-logo.svg
   index: /
   is_uncontrolled: false
   port_map: "8080"

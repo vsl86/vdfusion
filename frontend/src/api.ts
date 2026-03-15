@@ -175,7 +175,7 @@ if (!isWails) {
     };
     connectWS();
 }
- else {
+else {
     // Wails mode: Global listeners for persistence (Guarded against HMR duplicates)
     if (!(window as any)._vdf_listeners_init) {
         WailsEventsOn('app_log', (data) => {
@@ -410,4 +410,10 @@ export async function GetDebugInfo(baseUrl?: string): Promise<any> {
     if (isWails && !baseUrl) return WailsApp.GetDebugInfo();
     const base = baseUrl ? normalizeUrl(baseUrl) : apiBase;
     return fetch(`${base}/api/debug`).then(r => r.json());
+}
+
+export async function CheckForUpdates(): Promise<{ current: string, latest: string, url: string, notes: string, update_available: boolean }> {
+    if (isWails) {
+    }
+    return fetch(`${apiBase}/api/updates/check`).then(r => r.json());
 }

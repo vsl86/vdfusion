@@ -11,6 +11,7 @@ type Settings struct {
 	IncludeList []string `json:"include_list"`
 	BlackList   []string `json:"black_list"`
 
+	FilterByDuration          bool    `json:"filter_by_duration"`
 	Percent                   float64 `json:"percent"`
 	PercentDurationDifference float64 `json:"percent_duration_difference"`
 	DurationDifferenceMinSec  float64 `json:"duration_difference_min_seconds"`
@@ -45,6 +46,7 @@ func NewSettingsManager(filePath string) *SettingsManager {
 	sm := &SettingsManager{
 		filePath: filePath,
 		settings: Settings{
+			FilterByDuration:          false,
 			Percent:                   96.0,
 			PercentDurationDifference: 20.0,
 			Thumbnails:                4,
@@ -98,6 +100,7 @@ func (sm *SettingsManager) Update(s Settings) error {
 
 func (sm *SettingsManager) Reset() error {
 	defaults := Settings{
+		FilterByDuration:          false,
 		Percent:                   96.0,
 		PercentDurationDifference: 20.0,
 		Thumbnails:                13,

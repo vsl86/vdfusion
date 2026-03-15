@@ -3,6 +3,7 @@ export namespace config {
 	export class Settings {
 	    include_list: string[];
 	    black_list: string[];
+	    filter_by_duration: boolean;
 	    percent: number;
 	    percent_duration_difference: number;
 	    duration_difference_min_seconds: number;
@@ -28,6 +29,7 @@ export namespace config {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.include_list = source["include_list"];
 	        this.black_list = source["black_list"];
+	        this.filter_by_duration = source["filter_by_duration"];
 	        this.percent = source["percent"];
 	        this.percent_duration_difference = source["percent_duration_difference"];
 	        this.duration_difference_min_seconds = source["duration_difference_min_seconds"];
