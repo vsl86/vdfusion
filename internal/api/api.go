@@ -27,6 +27,7 @@ import (
 	"vdfusion/internal/engine"
 	"vdfusion/internal/media"
 	"vdfusion/internal/utils"
+	"vdfusion/internal/version"
 )
 
 type Server struct {
@@ -545,7 +546,8 @@ func (s *Server) handleGetDebugInfo(w http.ResponseWriter, r *http.Request) {
 
 	info := map[string]any{
 		"instance_id": instanceID,
-		"version":     "headless", // Hardcoded for now as it's internal/api
+		"version":     version.Version,
+		"commit":      version.Commit,
 		"os":          goruntime.GOOS,
 		"arch":        goruntime.GOARCH,
 		"db_path":     s.db.GetPath(),

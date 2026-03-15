@@ -55,11 +55,11 @@
         </button>
         <div class="status-item wails-indicator" v-if="isWails">
           <span class="indicator-dot online"></span>
-          App
+          App <span class="version-tag">{{ appVersion }}</span>
         </div>
         <div class="status-item wails-indicator" v-else>
           <span class="indicator-dot web"></span>
-          Web UI
+          Web UI <span class="version-tag">{{ appVersion }}</span>
         </div>
         <!-- Mobile Scanning Pulse -->
         <div v-if="scanning" class="scanning-pulse-mobile" title="Scan in progress">
@@ -108,6 +108,7 @@ const props = defineProps({
 const isWails = !!window.go
 const showLogs = ref(false)
 const appLogs = ref([])
+const appVersion = ref('...')
 const logsEndRef = ref(null)
 let unlistenLog = null
 
@@ -128,6 +129,14 @@ const clearLogs = async () => {
 }
 
 onMounted(async () => {
+  // Fetch version info
+  try {
+    const debug = await GetDebugInfo()
+    appVersion.value = debug.version || 'unknown'
+  } catch (e) {
+    console.warn('StatusLine: Failed to fetch version info', e)
+  }
+
   // Load history from RxDB
   try {
     const history = await GetActivityHistory()
@@ -401,6 +410,15 @@ const reportBug = async () => {
   font-size: 11px;
   padding-left: 8px;
   border-left: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.version-tag {
+  opacity: 0.5;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
 }
 
 .bug-btn {
