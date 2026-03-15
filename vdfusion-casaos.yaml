@@ -15,7 +15,7 @@ services:
     hostname: vdfusion
     image: ghcr.io/vsl86/vdfusion:v0.9.9
     labels:
-      icon: https://raw.githubusercontent.com/vsl86/vdfusion/refs/heads/main/vdfusion-logo.svg
+      icon: https://raw.githubusercontent.com/vsl86/vdfusion/dff56dfd6520961a31a7eb97b947c3821bad8033/vdfusion-logo.svg
     ports:
       - target: 8080
         published: "8080"

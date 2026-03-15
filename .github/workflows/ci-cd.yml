@@ -71,6 +71,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -112,13 +113,27 @@ jobs:
           echo "WINDOWS_AMD64_CGO_LDFLAGS=-L$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/lib" >> $GITHUB_ENV
           echo "WINDOWS_AMD64_CGO_CFLAGS=-I$GITHUB_WORKSPACE/ffmpeg-win-x64/dist/include" >> $GITHUB_ENV
 
+      - name: Set Version Info
+        id: versioning
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="v0.0.0-latest"
+          fi
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          # Also set for wails build to use
+          echo "LDFLAGS=-X vdfusion/internal/version.Version=${VERSION} -X vdfusion/internal/version.Commit=${COMMIT}" >> $GITHUB_ENV
+
       - name: Build Wails (Multi-Platform)
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           # 1. Build macOS (ARM64 & AMD64)
-          wails build -platform darwin/arm64
+          wails build -ldflags "${{ env.LDFLAGS }}" -platform darwin/arm64
 
           # 2. Build Windows (AMD64)
           CGO_ENABLED=1 \
@@ -126,7 +141,7 @@ jobs:
           CXX=x86_64-w64-mingw32-g++ \
           CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
           CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
-          wails build -nsis -webview2=embed -platform windows/amd64
+          wails build -ldflags "${{ env.LDFLAGS }}" -nsis -webview2=embed -platform windows/amd64
 
       - name: Bundle Dylibs (macOS)
         run: |
@@ -229,5 +244,36 @@ jobs:
             release-bins/**/*.dmg
             release-bins/**/*.zip
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  latest-release:
+    name: Update Latest Release
+    runs-on: [self-hosted, Linux, X64, casa]
+    needs: [docker, build]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-bins
+
+      - name: Create Rolling Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Unstable Build (Main Branch)"
+          body: |
+            This is a floating release containing the latest builds from the `main` branch.
+            Automatically updated on every push to `main`.
+            
+            **Commit:** ${{ github.sha }}
+          prerelease: true
+          files: |
+            release-bins/**/*.exe
+            release-bins/**/*.dmg
+            release-bins/**/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

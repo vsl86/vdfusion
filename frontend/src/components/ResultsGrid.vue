@@ -58,7 +58,8 @@
       <div v-for="(group, gi) in displayGroups" :key="group.id" class="group-card"
         :class="{ 'group-identical': isIdenticalGroup(group) }">
         <div class="group-header" :class="{ 'focused': isFocused(gi, -1) }" :id="`group-${gi}`"
-          @click="toggleGroup(gi)" @mousedown="focusedItem = { groupIndex: gi, fileIndex: -1 }">
+          @click="toggleGroup(gi)" @mousedown="focusedItem = { groupIndex: gi, fileIndex: -1 }"
+          @contextmenu.prevent="openContextMenu($event, 'group', { gi, group })">
           <div class="group-check" @click.stop>
             <input type="checkbox" :checked="isGroupSelected(group)" @change="toggleGroupSelection(group)" />
           </div>
@@ -95,7 +96,8 @@
             <tbody>
               <tr v-for="(file, fi) in group.files" :key="fi"
                 :class="{ 'row-best': fi === bestIndex(group), 'row-selected': isSelected(file.path), 'focused': isFocused(gi, fi) }"
-                :id="`file-${gi}-${fi}`" @mousedown="focusedItem = { groupIndex: gi, fileIndex: fi }">
+                :id="`file-${gi}-${fi}`" @mousedown="focusedItem = { groupIndex: gi, fileIndex: fi }"
+                @contextmenu.prevent="openContextMenu($event, 'file', { gi, fi, file, group })">
                 <td v-if="!preview" class="cell-check">
                   <input type="checkbox" :checked="isSelected(file.path)" @change="toggleItem(file.path)" />
                 </td>
@@ -202,6 +204,28 @@ const sortOrder = ref('desc') // 'asc', 'desc'
 // Keyboard navigation focus state
 // fileIndex === -1 means the group header is focused
 const focusedItem = ref({ groupIndex: 0, fileIndex: -1 })
+
+const contextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  type: '', // 'file' or 'group'
+  data: null
+})
+
+const openContextMenu = (e, type, data) => {
+  contextMenu.value = {
+    show: true,
+    x: e.clientX,
+    y: e.clientY,
+    type,
+    data
+  }
+}
+
+const closeContextMenu = () => {
+  contextMenu.value.show = false
+}
 
 const isFocused = (gIndex, fIndex) => {
   return focusedItem.value.groupIndex === gIndex && focusedItem.value.fileIndex === fIndex
@@ -429,10 +453,12 @@ onMounted(() => {
   }
 
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('mousedown', closeContextMenu)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('mousedown', closeContextMenu)
 })
 
 const toggleGroup = (index) => {
@@ -500,6 +526,11 @@ const fetchAllThumbnails = async () => {
 defineExpose({ loadResults, getSummary: () => ({ groups: totalResults.value, files: totalFiles.value }), cancelThumbnails })
 
 const getFileThumbs = (path) => thumbnails.value[path] || []
+
+const copyToClipboard = (text) => {
+  navigator.clipboard.writeText(text)
+  setStatus('Copied to clipboard')
+}
 
 const toggleSort = (key) => {
   if (sortKey.value === key) {
@@ -1179,7 +1210,7 @@ tr:hover .path-actions {
 }
 
 .row-selected td {
-  background: rgba(var(--accent-rgb), 0.05) !important;
+  background-color: rgba(var(--accent-rgb), 0.08) !important;
 }
 
 /* Toolbar */
@@ -1366,17 +1397,83 @@ tr:hover .path-actions {
 
 /* Keyboard Navigation focus */
 .group-header.focused,
+tr.focused {
+  scroll-margin-top: 80px;
+  scroll-margin-bottom: 80px;
+}
+
+.group-header.focused,
 tr.focused td {
-  background-color: var(--surface-alt) !important;
-  box-shadow: inset 0 0 0 2px var(--accent) !important;
+  background-color: rgba(var(--accent-rgb), 0.15) !important;
 }
 
 tr.focused.row-best td {
-  background-color: var(--surface-alt) !important;
+  background-color: rgba(var(--accent-rgb), 0.15) !important;
 }
 
 .group-identical .group-header.focused {
-  background-color: rgba(16, 185, 129, 0.08) !important;
-  box-shadow: inset 0 0 0 2px #10b981 !important;
+  background-color: rgba(16, 185, 129, 0.12) !important;
+}
+
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  z-index: 3000;
+  background: rgba(26, 26, 36, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  padding: 6px;
+  min-width: 180px;
+  animation: context-fade 0.15s ease-out;
+}
+
+@keyframes context-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-5px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.menu-item {
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 13px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.menu-item:hover {
+  background: rgba(var(--accent-rgb), 0.2);
+  color: #fff;
+}
+
+.menu-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  filter: grayscale(0.5);
+}
+
+.menu-sep {
+  margin: 6px;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 </style>

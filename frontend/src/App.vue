@@ -252,12 +252,22 @@
       :type="modalState.type" :confirmLabel="modalState.confirmLabel" :cancelLabel="modalState.cancelLabel"
       :defaultValue="modalState.defaultValue" :placeholder="modalState.placeholder" :isDanger="modalState.isDanger"
       @confirm="onModalConfirm" @cancel="onModalCancel" />
+
+    <!-- Update Notification -->
+    <transition name="slide-in">
+      <div v-if="updateAvailable" class="update-bar" @click="openExternal(updateLink)">
+        <span class="update-icon">🚀</span>
+        <span class="update-text">New version available: <strong>{{ updateVersion }}</strong></span>
+        <span class="update-link">Review changes →</span>
+        <button class="close-update" @click.stop="updateAvailable = false">×</button>
+      </div>
+    </transition>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
-import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats, CheckDependencies, DownloadDependencies, getConnectionConfig } from './api'
+import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats, CheckDependencies, DownloadDependencies, getConnectionConfig, GetDebugInfo } from './api'
 
 import ScanSettings from './components/ScanSettings.vue'
 import Logo from './components/Logo.vue'
@@ -300,6 +310,10 @@ const brandingColor = computed(() => {
   if (phase === 'comparing') return '#28a745'
   return '#3b82f6'
 })
+
+const updateAvailable = ref(false)
+const updateVersion = ref('')
+const updateLink = ref('https://github.com/vsl86/vdfusion/releases')
 
 const updateFavicon = (color) => {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2000"><circle cx="1000" cy="1000" r="900" fill="#203a54" /><circle cx="1000" cy="1000" r="700" fill="white" /><path d="M756,557.439C711.401,564.39 671.292,596.204 659.759,641C655.832,656.254 656,672.374 656,688C656,697.608 655.433,707.414 656.089,717C657.591,738.919 657,761 657,783L657,884C657,980.663 657.465,1077.34 656.999,1174C656.781,1219.18 653.924,1264.84 657.089,1310C658.205,1325.91 660.602,1343.6 667.981,1358C687.336,1395.76 732.868,1424.45 776,1419.83C803.656,1416.86 826.672,1401.43 850,1387.6C880.998,1369.22 912.096,1350.98 943,1332.45C1058.14,1263.4 1174.88,1197.08 1290,1128C1305.29,1118.83 1320.52,1109.53 1336,1100.7C1372.66,1079.78 1415.22,1059.92 1426.33,1015C1427.25,1011.31 1428.63,1007.83 1428.91,1004C1430.43,983.432 1428.09,960.361 1418.1,942C1403.79,915.696 1376.35,900.618 1351,886.694C1337.12,879.071 1323.58,870.833 1310,862.692C1181.73,785.77 1053.27,709.161 925,632.2C901.016,617.81 876.842,603.694 853,589.089C823.97,571.305 791.666,551.88 756,557.439Z" fill="${color}" /></svg>`;
@@ -524,7 +538,47 @@ onMounted(async () => {
   if (isWails) {
     checkDeps()
   }
+
+  // Check for updates after 3 seconds to not block startup
+  setTimeout(checkIfUpdateAvailable, 3000)
 })
+
+const parseVersion = (v) => {
+  if (!v) return [0, 0, 0]
+  const match = v.match(/(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return [0, 0, 0]
+  return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])]
+}
+
+const checkIfUpdateAvailable = async () => {
+  try {
+    const debug = await GetDebugInfo()
+    const current = debug.version
+    if (!current || current.includes('dev')) return
+
+    const resp = await fetch('https://api.github.com/repos/vsl86/vdfusion/releases/latest')
+    if (!resp.ok) return
+    const latest = await resp.json()
+    const latestTag = latest.tag_name
+
+    const cv = parseVersion(current)
+    const lv = parseVersion(latestTag)
+
+    // Compare semantic version
+    let newer = false
+    if (lv[0] > cv[0]) newer = true
+    else if (lv[0] === cv[0] && lv[1] > cv[1]) newer = true
+    else if (lv[0] === cv[0] && lv[1] === cv[1] && lv[2] > cv[2]) newer = true
+
+    if (newer) {
+      updateAvailable.value = true
+      updateVersion.value = latestTag
+      updateLink.value = latest.html_url
+    }
+  } catch (e) {
+    console.warn('Failed to check for updates', e)
+  }
+}
 
 const checkDeps = async () => {
   try {
@@ -1084,5 +1138,72 @@ const copyToClipboard = (text) => {
   0% { opacity: 0.8; }
   50% { opacity: 1; transform: scale(1.05); }
   100% { opacity: 0.8; }
+}
+
+/* Update Notification Bar */
+.update-bar {
+  position: fixed;
+  top: 60px; /* Below navigation */
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 30px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 2000;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.update-bar:hover {
+  transform: translateX(-50%) translateY(-2px);
+  background: #4f46e5;
+}
+
+.update-icon {
+  font-size: 16px;
+}
+
+.update-text {
+  font-size: 13px;
+}
+
+.update-link {
+  font-size: 11px;
+  opacity: 0.8;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.close-update {
+  background: rgba(0, 0, 0, 0.2);
+  border: none;
+  color: #fff;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.close-update:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.slide-in-enter-active, .slide-in-leave-active {
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1);
+}
+
+.slide-in-enter-from, .slide-in-leave-to {
+  transform: translateX(-50%) translateY(-100px);
+  opacity: 0;
 }
 </style>
