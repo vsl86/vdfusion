@@ -660,8 +660,8 @@ func (s *Server) handleCheckUpdates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) isNewer(current, latest string) bool {
-	if current == "v0.0.0-dev" {
-		return latest != "v0.0.0" && latest != ""
+	if current == "v0.0.0-dev" || current == "v0.0.0-latest" {
+		return false
 	}
 
 	parse := func(v string) [3]int {
