@@ -511,6 +511,19 @@ onMounted(async () => {
     console.error('Failed to get scan status', e)
   }
 
+  // If not scanning, check if we have results to show the summary
+  if (!scanning.value) {
+    try {
+      const res = await GetResults(0, 5)
+      if (res && res.total > 0) {
+        hasScannedOnce.value = true
+        refreshResults(0) // Duration unknown on refresh, but we want the counts
+      }
+    } catch (e) {
+      console.error('Failed to pre-fetch results', e)
+    }
+  }
+
   EventsOn('scan_progress', (data) => {
     scanState.value = {
       current: data.current,

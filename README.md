@@ -29,7 +29,7 @@ The headless version is perfect for running on a continuous server. Use the foll
 ```yaml
 services:
   vdfusion:
-    image: vsl86/vdfusion:v0.9.9
+    image: ghcr.io/vsl86/vdfusion:latest ### check https://github.com/vsl86/vdfusion/pkgs/container/vdfusion for specific version/tag
     ports:
       - "8080:8080"
     volumes:

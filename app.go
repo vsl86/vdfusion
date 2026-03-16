@@ -110,6 +110,14 @@ func (a *App) GetResults(offset, limit int) engine.ResultsResponse {
 	return a.resultsManager.GetResultsWrapped(offset, limit)
 }
 
+func (a *App) GetDuplicateStats() map[string]int {
+	_, totalFiles := a.resultsManager.GetAll()
+	return map[string]int{
+		"total_groups": a.resultsManager.GetResultsWrapped(0, 0).Total,
+		"total_files":  totalFiles,
+	}
+}
+
 func (a *App) GetSettings() config.Settings {
 	return a.settings.Get()
 }

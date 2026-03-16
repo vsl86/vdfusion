@@ -45,7 +45,10 @@
             </label>
           </div>
         </div>
-        <button v-if="!preview" class="tool-btn" @click="fetchAllThumbnails">Fetch All Thumbnails</button>
+        <button v-if="!preview" class="tool-btn fetch-all-btn" :class="{ 'fetching-active': isFetchingThumbnails }" @click="fetchAllThumbnails">
+          <span v-if="isFetchingThumbnails">Fetching {{ thumbnailProgress.current }}/{{ thumbnailProgress.total }}</span>
+          <span v-else>Fetch All Thumbnails</span>
+        </button>
       </div>
       <div class="toolbar-right">
         <span v-if="statusMsg" class="status-msg">{{ statusMsg }}</span>
@@ -200,6 +203,9 @@ const scrollObserver = ref(null)
 const loading = ref(false)
 const sortKey = ref('similarity') // 'similarity', 'size', 'duration', 'path'
 const sortOrder = ref('desc') // 'asc', 'desc'
+
+const isFetchingThumbnails = ref(false)
+const thumbnailProgress = ref({ current: 0, total: 0 })
 
 // Keyboard navigation focus state
 // fileIndex === -1 means the group header is focused
@@ -459,6 +465,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('mousedown', closeContextMenu)
+  cancelThumbnails()
 })
 
 const toggleGroup = (index) => {
@@ -502,11 +509,13 @@ const fetchAllThumbnails = async () => {
   abortController.value = new AbortController()
   const signal = abortController.value.signal
 
-  const allFiles = results.value.flatMap(group => group.files)
+  const allFiles = results.value.flatMap(group => group.files).filter(f => !thumbnails.value[f.path])
+  if (allFiles.length === 0) return
+
+  isFetchingThumbnails.value = true
+  thumbnailProgress.value = { current: 0, total: allFiles.length }
 
   const concurrency = settings.value.concurrency || 4
-
-  // Simple worker pool
   const workers = []
 
   for (let i = 0; i < concurrency; i++) {
@@ -515,12 +524,19 @@ const fetchAllThumbnails = async () => {
         const file = allFiles.shift()
         if (file) {
           await fetchFileThumbnails(file, signal)
+          thumbnailProgress.value.current++
         }
       }
     })())
   }
 
-  await Promise.all(workers)
+  try {
+    await Promise.all(workers)
+  } finally {
+    if (!signal.aborted) {
+      isFetchingThumbnails.value = false
+    }
+  }
 }
 
 defineExpose({ loadResults, getSummary: () => ({ groups: totalResults.value, files: totalFiles.value }), cancelThumbnails })

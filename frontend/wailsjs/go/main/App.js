@@ -38,6 +38,10 @@ export function GetDebugInfo() {
   return window['go']['main']['App']['GetDebugInfo']();
 }
 
+export function GetDuplicateStats() {
+  return window['go']['main']['App']['GetDuplicateStats']();
+}
+
 export function GetIgnoredGroups() {
   return window['go']['main']['App']['GetIgnoredGroups']();
 }

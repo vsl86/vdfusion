@@ -259,6 +259,11 @@ export async function GetResults(offset: number = 0, limit: number = 50): Promis
     return fetch(`${apiBase}/api/results?${params}`).then(r => r.json());
 }
 
+export async function GetDuplicateStats(): Promise<{ total_groups: number, total_files: number }> {
+    if (isWails) return WailsApp.GetDuplicateStats();
+    return fetch(`${apiBase}/api/results/stats`).then(r => r.json());
+}
+
 export async function GetThumbnails(path: string, duration: number, count: number, signal?: AbortSignal): Promise<string[]> {
     if (isWails) return WailsApp.GetThumbnails(path, duration, count);
     const params = new URLSearchParams({ path, duration: duration.toString(), count: count.toString() });
