@@ -24,6 +24,8 @@ export function ExportDB():Promise<void>;
 
 export function GetDebugInfo():Promise<Record<string, any>>;
 
+export function GetDuplicateStats():Promise<Record<string, number>>;
+
 export function GetIgnoredGroups():Promise<Array<db.IgnoredGroup>>;
 
 export function GetResults(arg1:number,arg2:number):Promise<engine.ResultsResponse>;

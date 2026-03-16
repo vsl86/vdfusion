@@ -18,6 +18,7 @@ vi.mock('../wailsjs/go/main/App', () => ({
     ResetDB: vi.fn(),
     CleanupDB: vi.fn(),
     GetSuspiciousFiles: vi.fn(),
+    GetDuplicateStats: vi.fn(),
 }));
 
 describe('API Service (Wails Mode)', () => {
