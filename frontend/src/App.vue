@@ -253,9 +253,9 @@
       :defaultValue="modalState.defaultValue" :placeholder="modalState.placeholder" :isDanger="modalState.isDanger"
       @confirm="onModalConfirm" @cancel="onModalCancel" />
 
-    <!-- Update Notification -->
+    <!-- Update Notification (startup silent check) -->
     <transition name="slide-in">
-      <div v-if="updateAvailable" class="update-bar" @click="openExternal(updateLink)">
+      <div v-if="updateAvailable" class="update-bar" @click="window.open(updateLink, '_blank')">
         <span class="update-icon">🚀</span>
         <span class="update-text">New version available: <strong>{{ updateVersion }}</strong></span>
         <span class="update-link">Review changes →</span>
@@ -310,6 +310,7 @@ const brandingColor = computed(() => {
   if (phase === 'comparing') return '#28a745'
   return '#3b82f6'
 })
+
 
 const updateAvailable = ref(false)
 const updateVersion = ref('')
@@ -553,7 +554,7 @@ onMounted(async () => {
   }
 
   // Check for updates after 3 seconds to not block startup
-  setTimeout(checkIfUpdateAvailable, 3000)
+  setTimeout(() => checkIfUpdateAvailable(true), 3000)
 })
 
 const parseVersion = (v) => {
@@ -563,33 +564,55 @@ const parseVersion = (v) => {
   return [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])]
 }
 
-const checkIfUpdateAvailable = async () => {
+const checkIfUpdateAvailable = async (silent = false) => {
   try {
     const debug = await GetDebugInfo()
     const current = debug.version
-    if (!current || current.includes('dev')) return
+    if (!current || current.includes('dev')) {
+      if (!silent) showModal({ title: 'Updates', message: 'Running a development build — update checks are disabled.', type: 'alert' })
+      return
+    }
 
     const resp = await fetch('https://api.github.com/repos/vsl86/vdfusion/releases/latest')
-    if (!resp.ok) return
+    if (!resp.ok) {
+      if (!silent) showModal({ title: 'Update Check Failed', message: 'Could not reach GitHub. Please check your internet connection.', type: 'alert' })
+      return
+    }
     const latest = await resp.json()
     const latestTag = latest.tag_name
 
     const cv = parseVersion(current)
     const lv = parseVersion(latestTag)
 
-    // Compare semantic version
     let newer = false
     if (lv[0] > cv[0]) newer = true
     else if (lv[0] === cv[0] && lv[1] > cv[1]) newer = true
     else if (lv[0] === cv[0] && lv[1] === cv[1] && lv[2] > cv[2]) newer = true
 
     if (newer) {
-      updateAvailable.value = true
-      updateVersion.value = latestTag
-      updateLink.value = latest.html_url
+      if (silent) {
+        // Startup: show non-intrusive banner
+        updateAvailable.value = true
+        updateVersion.value = latestTag
+        updateLink.value = latest.html_url
+      } else {
+        // Manual: show modal with action
+        const confirmed = await showModal({
+          title: '🚀 Update Available',
+          message: `A new version ${latestTag} is available (you have ${current}).\n\nWould you like to open the release page?`,
+          confirmLabel: 'Open Release Page',
+          cancelLabel: 'Later'
+        })
+        if (confirmed) {
+          window.open(latest.html_url, '_blank')
+        }
+      }
+    } else if (!silent) {
+      showModal({ title: 'No Updates', message: `You are running the latest version (${current}).`, type: 'alert' })
     }
   } catch (e) {
     console.warn('Failed to check for updates', e)
+    if (!silent) showModal({ title: 'Update Check Failed', message: 'Something went wrong while checking for updates.', type: 'alert' })
   }
 }
 
