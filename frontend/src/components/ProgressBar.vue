@@ -98,14 +98,15 @@ const eta = computed(() => {
 })
 
 const formatDuration = (secs) => {
-  if (secs < 60) return `${Math.round(secs)}s`
-  if (secs < 3600) {
-    const m = Math.floor(secs / 60)
-    const s = Math.round(secs % 60)
+  const totalSeconds = Math.round(secs)
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  if (totalSeconds < 3600) {
+    const m = Math.floor(totalSeconds / 60)
+    const s = totalSeconds % 60
     return `${m}m ${s}s`
   }
-  const h = Math.floor(secs / 3600)
-  const m = Math.round((secs % 3600) / 60)
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
   return `${h}h ${m}m`
 }
 
