@@ -14,16 +14,23 @@
       </div>
       <div class="nav-pills desktop-only">
         <button class="nav-pill" :class="{ active: activeTab === 'scanner' }"
-          @click="activeTab = 'scanner'">Scanner</button>
+          @click="selectTab('scanner')">Scanner</button>
         <button class="nav-pill" :class="{ active: activeTab === 'results' }"
-          @click="activeTab = 'results'">Results</button>
+          @click="selectTab('results')">Results</button>
         <button class="nav-pill" :class="{ active: activeTab === 'blacklist' }"
-          @click="activeTab = 'blacklist'">Blacklist</button>
-        <button class="nav-pill" :class="{ active: activeTab === 'log' }" @click="activeTab = 'log'">Log</button>
+          @click="selectTab('blacklist')">Blacklist</button>
+        <button class="nav-pill" :class="{ active: activeTab === 'log' }" @click="selectTab('log')">Log</button>
         <button class="nav-pill" :class="{ active: activeTab === 'settings' }"
-          @click="activeTab = 'settings'">Settings</button>
+          @click="selectTab('settings')">Settings</button>
       </div>
-      <div class="nav-spacer desktop-only"></div>
+      <div class="theme-toggle">
+        <button class="theme-btn toggle-single" @click="toggleTheme" 
+                :title="theme === 'light' ? 'Switch to Dark' : theme === 'dark' ? 'Switch to System' : 'Switch to Light'">
+          <span v-if="theme === 'light'">☼</span>
+          <span v-else-if="theme === 'dark'">🌑</span>
+          <span v-else>A</span>
+        </button>
+      </div>
     </nav>
 
     <!-- Side Drawer (Mobile) -->
@@ -266,8 +273,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats, CheckDependencies, DownloadDependencies, getConnectionConfig, GetDebugInfo } from './api'
+import { ref, onMounted, watch, watchEffect } from 'vue'
+import { StartScan, StopScan, EventsOn, GetScanStatus, GetSuspiciousFiles, GetStats, CheckDependencies, DownloadDependencies, getConnectionConfig, GetDebugInfo, GetResults } from './api'
 
 import ScanSettings from './components/ScanSettings.vue'
 import Logo from './components/Logo.vue'
@@ -288,6 +295,30 @@ const selectTab = (tab) => {
   activeTab.value = tab
   menuOpen.value = false
 }
+
+// Theme management
+const theme = ref(localStorage.getItem('vdf_theme') || 'system')
+const setTheme = (t) => {
+  theme.value = t
+  localStorage.setItem('vdf_theme', t)
+}
+const toggleTheme = () => {
+  if (theme.value === 'light') setTheme('dark')
+  else if (theme.value === 'dark') setTheme('system')
+  else setTheme('light')
+}
+const applyTheme = () => {
+  let resolved = theme.value
+  if (resolved === 'system') {
+    resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
+  document.documentElement.setAttribute('data-theme', resolved)
+}
+watchEffect(applyTheme)
+onMounted(() => {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme)
+})
+
 const scanning = ref(false)
 const scanState = ref({ current: 0, total: 0, phase: '', last_file: '' })
 const hasScannedOnce = ref(false)
@@ -851,9 +882,9 @@ const copyToClipboard = (text) => {
   font-size: 11px;
   padding: 3px 8px;
   border-radius: 4px;
-  background: #fff3cd;
-  color: #664d03;
-  border: 1px solid #ffda6a;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .warning-entry {
@@ -1033,7 +1064,7 @@ const copyToClipboard = (text) => {
     position: relative;
     width: 20px;
     height: 2px;
-    background: #1e293b;
+    background: var(--text);
     border-radius: 2px;
   }
 
@@ -1043,7 +1074,7 @@ const copyToClipboard = (text) => {
     position: absolute;
     width: 20px;
     height: 2px;
-    background: #1e293b;
+    background: var(--text);
     left: 0;
     border-radius: 2px;
   }

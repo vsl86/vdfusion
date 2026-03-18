@@ -33,23 +33,26 @@
 
   <!-- Full settings page mode -->
   <div v-else class="settings-page">
-    <div class="dashboard-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+    <div class="dashboard-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
       <div>
         <h1>Settings</h1>
         <p>Configure scan behaviour, thresholds, and filters.</p>
       </div>
-      <div style="text-align: right;">
+      <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
         <button class="action-btn primary" :class="{ success: saveSuccess }"
           style="min-width: 120px; transition: all 0.3s ease;" :disabled="!isDirty || saveSuccess" @click="save">
           {{ saveSuccess ? '✓ Saved' : 'Save' }}
         </button>
-        <div v-if="versionInfo" class="version-display" style="margin-top: 8px; font-size: 11px; color: var(--text-muted);">
+        <div v-if="versionInfo" class="version-display"
+          style="font-size: 11px; color: var(--text-muted);">
           Version: {{ versionInfo.current }}
-          <button class="check-update-btn" @click="checkUpdates" :disabled="updateLoading" style="margin-left: 8px; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; cursor: pointer; color: var(--text-muted);">
+          <button class="check-update-btn" @click="checkUpdates" :disabled="updateLoading"
+            style="margin-left: 8px; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; cursor: pointer; color: var(--text-muted);">
             {{ updateLoading ? '...' : 'Check Updates' }}
           </button>
           <div v-if="updateAvailable" style="margin-top: 6px;">
-            <a :href="updateAvailable.url" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 600;">
+            <a :href="updateAvailable.url" target="_blank"
+              style="color: var(--accent); text-decoration: none; font-weight: 600;">
               🚀 Update Available: {{ updateAvailable.latest }}
             </a>
           </div>
@@ -82,7 +85,7 @@
                 <p>Videos will only be matched if their lengths are within this absolute range.</p>
               </div>
             </div>
-            
+
             <div v-if="settings.filter_by_duration" style="margin-top: 8px; padding-left: 24px">
               <div class="setting-row">
                 <label>Duration Diff Min (Sec)</label>
@@ -123,10 +126,10 @@
               <input type="checkbox" v-model="settings.recheck_suspicious" />
               Recheck Suspicious Files
             </label>
-            <div v-if="settings.recheck_suspicious" class="impact-preview" style="margin-top: 8px; background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.2);">
+            <div v-if="settings.recheck_suspicious" class="impact-preview warning" style="margin-top: 8px;">
               <span class="impact-icon">⚠️</span>
               <div class="impact-content">
-                <strong style="color: #f59e0b;">Recheck Enabled</strong>
+                <strong>Recheck Enabled</strong>
                 <p>This will clear the ignored status on previously marked false positives.</p>
               </div>
             </div>
@@ -135,11 +138,12 @@
               <input type="checkbox" v-model="settings.cleanup_orphans" />
               Cleanup missing files from library
             </label>
-            <div v-if="settings.cleanup_orphans" class="impact-preview" style="margin-top: 8px; background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.2);">
+            <div v-if="settings.cleanup_orphans" class="impact-preview danger" style="margin-top: 8px;">
               <span class="impact-icon">🗑️</span>
               <div class="impact-content">
-                <strong style="color: var(--danger);">Destructive Action</strong>
-                <p>Removes records for files not found during scan. It might affect files on currently disconnected network mounts.</p>
+                <strong>Destructive Action</strong>
+                <p>Removes records for files not found during scan. It might affect files on currently disconnected
+                  network mounts.</p>
               </div>
             </div>
           </div>
@@ -159,7 +163,7 @@
             <small v-else>Stable timestamps allow adding more hashes without full re-indexing.</small>
           </div>
 
-           <div class="setting-row">
+          <div class="setting-row">
             <label>Scan Concurrency (Worker Threads)</label>
             <NumberInput v-model="settings.concurrency" :min="1" :max="16" />
             <small>Lower this if you experience "Resource temporarily unavailable" errors</small>
@@ -177,10 +181,10 @@
               <input type="checkbox" v-model="settings.debug_logging" />
               Enable Backend Debug Logging
             </label>
-            <div v-if="settings.debug_logging" class="impact-preview" style="margin-top: 8px; background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.2);">
+            <div v-if="settings.debug_logging" class="impact-preview danger" style="margin-top: 8px;">
               <span class="impact-icon">🐞</span>
               <div class="impact-content">
-                <strong style="color: var(--danger);">Verbose Output</strong>
+                <strong>Verbose Output</strong>
                 <p>Only check this if diagnosing issues. It prints heavy verbose output to the terminal.</p>
               </div>
             </div>
@@ -193,7 +197,7 @@
     <div class="card mb-3">
       <div class="card-header">Search Directories</div>
       <div class="card-body" style="display:block; padding: 16px">
-        <div v-for="(path, i) in settings.include_list" :key="'inc-'+i" class="path-row">
+        <div v-for="(path, i) in settings.include_list" :key="'inc-' + i" class="path-row">
           <PathInput v-model="settings.include_list[i]" placeholder="/path/to/videos" />
           <button class="icon-btn" @click="openPicker('include', i)" title="Browse">📂</button>
           <button class="icon-btn danger" @click="removePath('include', i)">×</button>
@@ -206,7 +210,7 @@
     <div class="card mb-3">
       <div class="card-header">Blacklisted Directories</div>
       <div class="card-body" style="display:block; padding: 16px">
-        <div v-for="(p, i) in settings.black_list" :key="'bl-'+i" class="path-row">
+        <div v-for="(p, i) in settings.black_list" :key="'bl-' + i" class="path-row">
           <PathInput v-model="settings.black_list[i]" placeholder="/path/to/exclude" />
           <button class="icon-btn" @click="openPicker('exclude', i)" title="Browse">📂</button>
           <button class="icon-btn danger" @click="removePath('exclude', i)">×</button>
@@ -254,7 +258,8 @@
       </div>
     </div>
 
-    <button class="bl-del-btn danger" style="width:100%; margin-top: 10px; margin-bottom: 24px; padding: 12px; font-weight: 600;"
+    <button class="bl-del-btn danger"
+      style="width:100%; margin-top: 10px; margin-bottom: 24px; padding: 12px; font-weight: 600;"
       @click="resetToDefaults">
       Reset Settings to Defaults
     </button>
@@ -262,13 +267,15 @@
     <!-- Backend Connection: ONLY SHOW IN DESKTOP (Wails) MODE -->
     <div v-if="isWails" class="card mb-3" style="margin-top: 24px; border-top: 3px solid var(--accent);">
       <div class="card-header">Backend Connection</div>
-      <div class="card-body">
+      <div class="card-body" ref="connBlock">
         <div class="setting-group">
           <div class="connection-toggle-container">
-            <button class="conn-toggle" :class="{ active: connectionConfig.mode === 'local' }" @click="connectionConfig.mode = 'local'">
+            <button class="conn-toggle" :class="{ active: connectionConfig.mode === 'local' }"
+              @click="connectionConfig.mode = 'local'">
               Local Desktop
             </button>
-            <button class="conn-toggle" :class="{ active: connectionConfig.mode === 'remote' }" @click="connectionConfig.mode = 'remote'">
+            <button class="conn-toggle" :class="{ active: connectionConfig.mode === 'remote' }"
+              @click="connectionConfig.mode = 'remote'">
               Remote Server
             </button>
           </div>
@@ -276,20 +283,24 @@
           <div v-if="connectionConfig.mode === 'remote'" class="remote-config-area">
             <label style="display: block; font-size: 13px; margin-bottom: 8px;">Server Address (URL)</label>
             <div style="display: flex; gap: 8px;">
-              <input v-model="connectionConfig.url" class="remote-url-input" placeholder="http://192.168.1.10:8080" @keyup.enter="saveConnection" />
-              <button class="action-btn secondary" style="padding: 0 16px; height: 36px;" @click="testConnection" :disabled="testLoading">
+              <input v-model="connectionConfig.url" class="remote-url-input" placeholder="http://192.168.1.10:8080"
+                @keyup.enter="saveConnection" />
+              <button class="action-btn secondary" style="padding: 0 16px; height: 36px;" @click="testConnection"
+                :disabled="testLoading">
                 {{ testLoading ? '...' : 'Test' }}
               </button>
             </div>
             <small style="display: block; margin-top: 8px; color: var(--text-secondary);">
-              Connecting to a remote host will reload the app. Local filesystem pickers will be restricted to the server's path environment.
+              Connecting to a remote host will reload the app. Local filesystem pickers will be restricted to the
+              server's path environment.
             </small>
             <div v-if="testResult" class="test-badge" :class="testResult.success ? 'success' : 'error'">
               {{ testResult.message }}
             </div>
           </div>
 
-          <button v-if="connDirty" class="action-btn primary" style="width: 100%; margin-top: 16px;" @click="saveConnection">
+          <button v-if="connDirty" class="action-btn primary" style="width: 100%; margin-top: 16px;"
+            @click="saveConnection">
             Apply & Restart Connection
           </button>
         </div>
@@ -299,7 +310,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, inject } from 'vue'
+import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
 import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates } from '../api'
 import NumberInput from './NumberInput.vue'
 import DirPicker from './DirPicker.vue'
@@ -341,6 +352,17 @@ const pickerTargetValue = ref('/')
 
 const connectionConfig = ref(getConnectionConfig())
 const baseConnConfigStr = ref(JSON.stringify(connectionConfig.value))
+const connBlock = ref(null)
+
+watch(() => connectionConfig.value.mode, async (newMode) => {
+  if (newMode === 'remote') {
+    await nextTick()
+    if (connBlock.value) {
+      connBlock.value.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
+})
+
 const testLoading = ref(false)
 const testResult = ref(null)
 const versionInfo = ref(null)
@@ -380,12 +402,12 @@ const testConnection = async () => {
     // Override fetch to test against prospective URL
     const originalBase = localStorage.getItem('vdf_connection_config');
     localStorage.setItem('vdf_connection_config', JSON.stringify(connectionConfig.value));
-    
+
     // We can't easily re-init the whole API module without a reload, 
     // but GetDebugInfo already respects the dynamic base
     const info = await GetDebugInfo(connectionConfig.value.url)
     testResult.value = { success: true, message: `Success! Connected to version ${info.version || 'unknown'}` }
-    
+
     // Restore
     if (originalBase) localStorage.setItem('vdf_connection_config', originalBase);
     else localStorage.removeItem('vdf_connection_config');
@@ -446,7 +468,7 @@ onMounted(async () => {
   try {
     const info = await GetDebugInfo()
     versionInfo.value = { current: info.version }
-  } catch (e) {}
+  } catch (e) { }
 })
 
 const refresh = async () => {
@@ -596,8 +618,8 @@ defineExpose({ refresh })
 
 .save-btn.success,
 .manage-bl-btn.success {
-  background: #10b981 !important;
-  border-color: #10b981 !important;
+  background: var(--success) !important;
+  border-color: var(--success) !important;
   color: white !important;
 }
 
@@ -638,7 +660,7 @@ defineExpose({ refresh })
   cursor: pointer;
   padding: 6px 14px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text);
   transition: all 0.15s ease;
 }
 
@@ -652,7 +674,7 @@ defineExpose({ refresh })
 }
 
 .bl-del-btn.danger:hover {
-  background: #fee2e2;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .path-row {
@@ -680,7 +702,7 @@ defineExpose({ refresh })
   cursor: pointer;
   padding: 4px 10px;
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--text);
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
@@ -697,7 +719,7 @@ defineExpose({ refresh })
 .icon-btn.danger:hover {
   border-color: var(--danger);
   color: var(--danger);
-  background: #fee2e2;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .btn-small {
@@ -722,8 +744,18 @@ defineExpose({ refresh })
 }
 
 .impact-preview.recalc {
-  background: rgba(16, 185, 129, 0.08);
-  border-color: rgba(16, 185, 129, 0.2);
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.impact-preview.warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.impact-preview.danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
 .impact-icon {
@@ -741,7 +773,15 @@ defineExpose({ refresh })
 }
 
 .impact-preview.recalc strong {
-  color: #10b981;
+  color: var(--success);
+}
+
+.impact-preview.warning strong {
+  color: var(--warning);
+}
+
+.impact-preview.danger strong {
+  color: var(--danger);
 }
 
 .impact-content p {
@@ -790,8 +830,8 @@ defineExpose({ refresh })
 /* Connection Settings Styles */
 .connection-toggle-container {
   display: flex;
-  gap: 2px;
-  background: var(--background);
+  gap: 4px;
+  background: var(--bg);
   padding: 4px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -801,9 +841,9 @@ defineExpose({ refresh })
 .conn-toggle {
   flex: 1;
   padding: 10px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -811,10 +851,16 @@ defineExpose({ refresh })
   transition: all 0.2s;
 }
 
+.conn-toggle:hover:not(.active) {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
 .conn-toggle.active {
   background: var(--surface);
-  color: var(--primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  color: var(--accent);
+  border-color: var(--border);
+  box-shadow: var(--shadow);
 }
 
 .remote-config-area {
