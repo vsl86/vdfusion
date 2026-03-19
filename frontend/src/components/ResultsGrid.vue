@@ -1078,9 +1078,9 @@ const removeFromList = () => {
 }
 
 .sim-ref {
-  background: rgba(16, 185, 129, 0.1) !important;
-  color: #10b981 !important;
-  border-color: rgba(16, 185, 129, 0.2) !important;
+  background: rgba(var(--success-rgb), 0.1) !important;
+  color: var(--success) !important;
+  border-color: rgba(var(--success-rgb), 0.2) !important;
   font-weight: 700;
 }
 
@@ -1090,40 +1090,40 @@ const removeFromList = () => {
 }
 
 .group-identical .group-header {
-  background: rgba(16, 185, 129, 0.03);
+  background: rgba(var(--success-rgb), 0.03);
 }
 
 .group-badge.green {
-  background: #10b981;
-  color: white;
+  background: var(--success);
+  color: var(--on-primary);
 }
 
 .sim-high {
-  background: rgba(74, 222, 128, 0.1);
-  color: #4ade80;
-  border: 1px solid rgba(74, 222, 128, 0.2);
+  background: rgba(var(--success-rgb), 0.1);
+  color: var(--success);
+  border: 1px solid rgba(var(--success-rgb), 0.2);
 }
 
 .sim-med {
-  background: rgba(251, 191, 36, 0.1);
-  color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.2);
+  background: rgba(var(--warning-rgb), 0.1);
+  color: var(--warning);
+  border: 1px solid rgba(var(--warning-rgb), 0.2);
 }
 
 .sim-low {
-  background: rgba(248, 113, 113, 0.1);
-  color: #f87171;
-  border: 1px solid rgba(248, 113, 113, 0.2);
+  background: rgba(var(--danger-rgb), 0.1);
+  color: var(--danger);
+  border: 1px solid rgba(var(--danger-rgb), 0.2);
 }
 
 .text-better {
-  color: #4ade80;
+  color: var(--success);
   /* emerald-400 */
   font-weight: 600;
 }
 
 .text-worse {
-  color: #f87171;
+  color: var(--danger);
   /* red-400 */
 }
 
@@ -1217,7 +1217,7 @@ tr:hover .path-actions {
 .tbl-btn.danger:hover {
   border-color: var(--danger);
   color: var(--danger);
-  background: rgba(var(--danger-rgb), 0.05);
+  background: rgba(var(--danger-rgb), 0.1);
 }
 
 .row-best td {

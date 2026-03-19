@@ -149,7 +149,7 @@ onMounted(() => {
 .path-bar button {
   padding: 6px 16px;
   background: var(--accent);
-  color: white;
+  color: var(--on-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -219,7 +219,7 @@ onMounted(() => {
 
 .btn.primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-primary);
 }
 
 .btn.secondary {

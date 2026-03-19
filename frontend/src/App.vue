@@ -1002,7 +1002,7 @@ const copyToClipboard = (text) => {
 
 .remote-badge {
   background: var(--accent);
-  color: white;
+  color: var(--on-primary);
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
@@ -1015,6 +1015,7 @@ const copyToClipboard = (text) => {
   margin-left: 4px;
   box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
   animation: pulse-remote 2s infinite;
+  white-space: nowrap;
 }
 
 @keyframes pulse-remote {
@@ -1045,6 +1046,7 @@ const copyToClipboard = (text) => {
   .top-nav {
     padding: 12px 16px;
     height: 60px;
+    grid-template-columns: 1fr auto;
   }
 
   .menu-toggle {
@@ -1179,27 +1181,10 @@ const copyToClipboard = (text) => {
 
   .drawer-link.active {
     background: var(--primary);
-    color: white;
+    color: var(--on-primary);
   }
 }
 
-.remote-badge {
-  background: var(--accent);
-  color: white;
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 4px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  letter-spacing: 0.05em;
-  margin-left: 4px;
-  box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.3);
-  animation: pulse-remote 2s infinite;
-  white-space: nowrap;
-}
 
 @keyframes pulse-remote {
   0% { opacity: 0.8; }

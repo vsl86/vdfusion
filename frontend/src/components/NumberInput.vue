@@ -24,22 +24,24 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const onInput = (e) => {
-  let val = parseInt(e.target.value)
+  let val = parseFloat(e.target.value)
   if (isNaN(val)) val = props.min
   if (val < props.min) val = props.min
   if (val > props.max) val = props.max
-  emit('update:modelValue', val)
+  emit('update:modelValue', Number(val.toFixed(1)))
 }
 
 const increment = () => {
   if (props.modelValue < props.max) {
-    emit('update:modelValue', props.modelValue + props.step)
+    const newVal = props.modelValue + props.step
+    emit('update:modelValue', Number(newVal.toFixed(1)))
   }
 }
 
 const decrement = () => {
   if (props.modelValue > props.min) {
-    emit('update:modelValue', props.modelValue - props.step)
+    const newVal = props.modelValue - props.step
+    emit('update:modelValue', Number(newVal.toFixed(1)))
   }
 }
 </script>

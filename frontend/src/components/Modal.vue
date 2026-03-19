@@ -140,7 +140,7 @@ const handleCancel = () => {
   margin: 0;
   font-size: 14px;
   line-height: 1.5;
-  color: var(--text-secondary);
+  color: var(--text);
 }
 
 .prompt-input-container {
@@ -150,6 +150,8 @@ const handleCancel = () => {
 .prompt-input {
   width: 100%;
   padding: 10px 12px;
+  background: var(--background);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: 14px;
@@ -183,7 +185,7 @@ const handleCancel = () => {
 
 .modal-btn.primary {
   background: var(--primary);
-  color: white;
+  color: var(--on-primary);
 }
 
 .modal-btn.primary:hover {
@@ -199,7 +201,7 @@ const handleCancel = () => {
 }
 
 .modal-btn.secondary {
-  background: white;
+  background: var(--surface);
   border-color: var(--border);
   color: var(--text);
 }

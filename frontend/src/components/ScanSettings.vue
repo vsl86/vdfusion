@@ -7,16 +7,16 @@
       <!-- SIMILARITY -->
       <div class="section-label">Comparison</div>
       <div class="filter-row">
-        <span>Similarity</span>
-        <span>{{ settings.percent }}%</span>
+        <span>Similarity (%)</span>
+        <NumberInput v-model="settings.percent" :min="50" :max="100" :step="0.1" />
       </div>
-      <input type="range" min="50" max="100" step="0.5" v-model.number="settings.percent" class="filter-slider" />
+      <input type="range" min="50" max="100" step="0.1" v-model.number="settings.percent" class="filter-slider" />
 
-      <div class="filter-row" style="margin-top: 8px">
-        <span>Duration Diff</span>
-        <span>{{ settings.percent_duration_difference }}%</span>
+      <div class="filter-row" style="margin-top: 12px">
+        <span>Duration Diff (%)</span>
+        <NumberInput v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" />
       </div>
-      <input type="range" min="0" max="100" step="1" v-model.number="settings.percent_duration_difference"
+      <input type="range" min="0" max="100" step="0.1" v-model.number="settings.percent_duration_difference"
         class="filter-slider" />
 
       <button class="manage-bl-btn" :class="{ success: saveSuccess }"
@@ -66,12 +66,18 @@
         <div class="setting-group">
           <h4>Thresholds & Filters</h4>
           <div class="setting-row">
-            <label>Similarity Threshold: {{ settings.percent }}%</label>
-            <input type="range" min="50" max="100" step="0.1" v-model.number="settings.percent" />
+            <div class="filter-row" style="margin-top: 0; margin-bottom: 8px;">
+              <span style="font-weight: 500;">Similarity Threshold (%)</span>
+              <NumberInput v-model="settings.percent" :min="50" :max="100" :step="0.1" />
+            </div>
+            <input type="range" min="50" max="100" step="0.1" v-model.number="settings.percent" class="filter-slider" />
           </div>
-          <div class="setting-row">
-            <label>Duration Difference: {{ settings.percent_duration_difference }}%</label>
-            <input type="range" min="0" max="100" step="0.1" v-model.number="settings.percent_duration_difference" />
+          <div class="setting-row" style="margin-top: 16px;">
+            <div class="filter-row" style="margin-top: 0; margin-bottom: 8px;">
+              <span style="font-weight: 500;">Duration Difference (%)</span>
+              <NumberInput v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" />
+            </div>
+            <input type="range" min="0" max="100" step="0.1" v-model.number="settings.percent_duration_difference" class="filter-slider" />
           </div>
           <div class="setting-row">
             <label class="filter-check">

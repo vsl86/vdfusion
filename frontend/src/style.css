@@ -15,8 +15,11 @@
   --accent-rgb: 59, 130, 246;
   --accent-hover: #2563eb;
   --danger: #ef4444;
+  --danger-rgb: 239, 68, 68;
   --success: #22c55e;
+  --success-rgb: 34, 197, 94;
   --warning: #f59e0b;
+  --warning-rgb: 245, 158, 11;
   --radius: 12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
@@ -366,12 +369,11 @@ body {
   left: -2px;
   right: -2px;
   bottom: -2px;
-  background: conic-gradient(from 0deg, 
-    transparent 0%, 
-    var(--accent) 30%, 
-    #6366f1 70%, 
-    transparent 100%
-  );
+  background: conic-gradient(from 0deg,
+      transparent 0%,
+      var(--accent) 30%,
+      #6366f1 70%,
+      transparent 100%);
   border-radius: var(--radius-sm);
   animation: rotate-border 2s linear infinite;
   z-index: -2;
@@ -387,8 +389,13 @@ body {
 }
 
 @keyframes rotate-border {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── Progress Card ──────────────────────────────── */

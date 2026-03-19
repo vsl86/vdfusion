@@ -247,7 +247,7 @@ const reportBug = async () => {
   background: #141419;
   /* Forced dark background */
   border-top: 1px solid rgba(255, 255, 255, 0.1);
-  color: #a0a0b0;
+  color: var(--text-secondary);
   font-size: 11px;
   z-index: 1000;
   display: flex;
@@ -293,7 +293,7 @@ const reportBug = async () => {
 }
 
 .status-value {
-  color: #e0e0f0;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -346,7 +346,7 @@ const reportBug = async () => {
 }
 
 .count {
-  color: #fff;
+  color: var(--text);
   font-size: 10px;
 }
 
@@ -579,7 +579,7 @@ const reportBug = async () => {
 
 .log-title {
   font-weight: 600;
-  color: #fff;
+  color: var(--text);
 }
 
 .log-actions {
