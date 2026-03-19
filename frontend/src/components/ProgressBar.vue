@@ -144,23 +144,23 @@ onMounted(() => {
 
 /* Phase-specific colors */
 .phase-discovery .progress-fill {
-  background: #64748b !important;
+  background: var(--text-muted) !important;
 }
 
 .phase-discovery .status-dot {
-  background: #64748b !important;
+  background: var(--text-muted) !important;
 }
 
 .phase-comparing .pct {
-  color: #28a745 !important;
+  color: var(--success) !important;
 }
 
 .phase-comparing .progress-fill {
-  background: #28a745 !important;
+  background: var(--success) !important;
 }
 
 .phase-comparing .status-dot {
-  background: #28a745 !important;
+  background: var(--success) !important;
 }
 
 .progress-fill.indeterminate {

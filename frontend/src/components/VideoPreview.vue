@@ -183,8 +183,8 @@ watch(() => props.path, (newPath) => {
 }
 
 .action-btn {
-  background: #3b82f6;
-  color: white;
+  background: var(--accent);
+  color: var(--on-primary);
   border: none;
   padding: 4px 10px;
   border-radius: 4px;
@@ -249,8 +249,8 @@ watch(() => props.path, (newPath) => {
 }
 
 .retry-btn {
-  background: #6366f1;
-  color: white;
+  background: var(--accent);
+  color: var(--on-primary);
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
