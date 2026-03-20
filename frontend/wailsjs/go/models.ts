@@ -198,6 +198,20 @@ export namespace main {
 	        this.dirs = source["dirs"];
 	    }
 	}
+	export class DuplicateStats {
+	    total_groups: number;
+	    total_files: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DuplicateStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total_groups = source["total_groups"];
+	        this.total_files = source["total_files"];
+	    }
+	}
 	export class WarningInfo {
 	    message: string;
 	    fix: string;

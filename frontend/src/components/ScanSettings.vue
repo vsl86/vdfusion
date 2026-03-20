@@ -6,18 +6,19 @@
 
       <!-- SIMILARITY -->
       <div class="section-label">Comparison</div>
-      <div class="filter-row">
-        <span>Similarity (%)</span>
-        <NumberInput v-model="settings.percent" :min="50" :max="100" :step="0.1" />
+      <div style="margin-bottom: 24px;">
+        <div class="filter-row" style="margin-bottom: 8px;">
+          <span>Similarity Threshold</span>
+        </div>
+        <SliderFine v-model="settings.percent" :min="50" :max="100" :step="0.1" suffix="%" />
       </div>
-      <input type="range" min="50" max="100" step="0.1" v-model.number="settings.percent" class="filter-slider" />
 
-      <div class="filter-row" style="margin-top: 12px">
-        <span>Duration Diff (%)</span>
-        <NumberInput v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" />
+      <div style="margin-bottom: 16px;">
+        <div class="filter-row" style="margin-bottom: 8px;">
+          <span>Duration Difference</span>
+        </div>
+        <SliderFine v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" suffix="%" />
       </div>
-      <input type="range" min="0" max="100" step="0.1" v-model.number="settings.percent_duration_difference"
-        class="filter-slider" />
 
       <button class="manage-bl-btn" :class="{ success: saveSuccess }"
         style="margin-top:14px; background: var(--accent); border-color: var(--accent); color: white; border-radius: var(--radius-xs); width: 100%; transition: all 0.3s ease;"
@@ -66,18 +67,16 @@
         <div class="setting-group">
           <h4>Thresholds & Filters</h4>
           <div class="setting-row">
-            <div class="filter-row" style="margin-top: 0; margin-bottom: 8px;">
-              <span style="font-weight: 500;">Similarity Threshold (%)</span>
-              <NumberInput v-model="settings.percent" :min="50" :max="100" :step="0.1" />
+            <div class="filter-row" style="margin-top: 0; margin-bottom: 12px;">
+              <span style="font-weight: 500;">Similarity Threshold</span>
             </div>
-            <input type="range" min="50" max="100" step="0.1" v-model.number="settings.percent" class="filter-slider" />
+            <SliderFine v-model="settings.percent" :min="50" :max="100" :step="0.1" suffix="%" />
           </div>
-          <div class="setting-row" style="margin-top: 16px;">
-            <div class="filter-row" style="margin-top: 0; margin-bottom: 8px;">
-              <span style="font-weight: 500;">Duration Difference (%)</span>
-              <NumberInput v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" />
+          <div class="setting-row" style="margin-top: 24px;">
+            <div class="filter-row" style="margin-top: 0; margin-bottom: 12px;">
+              <span style="font-weight: 500;">Duration Difference</span>
             </div>
-            <input type="range" min="0" max="100" step="0.1" v-model.number="settings.percent_duration_difference" class="filter-slider" />
+            <SliderFine v-model="settings.percent_duration_difference" :min="0" :max="100" :step="0.1" suffix="%" />
           </div>
           <div class="setting-row">
             <label class="filter-check">
@@ -319,6 +318,7 @@
 import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
 import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates } from '../api'
 import NumberInput from './NumberInput.vue'
+import SliderFine from './SliderFine.vue'
 import DirPicker from './DirPicker.vue'
 import PathInput from './PathInput.vue'
 

@@ -33,10 +33,13 @@ func (h *Hub) Run(ctx context.Context) {
 		case msg := <-h.broadcast:
 			h.mu.Lock()
 			for c := range h.clients {
-				err := c.conn.Write(ctx, websocket.MessageText, msg)
+				// Use a timeout for each client write to prevent one slow client from blocking the hub
+				writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				err := c.conn.Write(writeCtx, websocket.MessageText, msg)
+				cancel()
 				if err != nil {
 					log.Printf("WS write error: %v", err)
-					c.conn.Close(websocket.StatusNormalClosure, "")
+					c.conn.Close(websocket.StatusPolicyViolation, "write timeout or error")
 					delete(h.clients, c)
 				}
 			}
@@ -63,7 +66,11 @@ func (h *Hub) BroadcastProgress(current, total int, phase string, lastFile strin
 		"duration_seconds":            durationSeconds,
 		"estimated_remaining_seconds": estimatedRemainingSeconds,
 	})
-	h.broadcast <- msg
+	select {
+	case h.broadcast <- msg:
+	default:
+		// Drop message if buffer is full to avoid blocking the engine
+	}
 }
 
 func (h *Hub) BroadcastLog(severity, message string) {
@@ -73,12 +80,20 @@ func (h *Hub) BroadcastLog(severity, message string) {
 		"message":  message,
 		"time":     time.Now().Format("15:04:05"),
 	})
-	h.broadcast <- msg
+	select {
+	case h.broadcast <- msg:
+	default:
+		// Drop message if buffer is full
+	}
 }
 func (h *Hub) BroadcastSystemLog(line string) {
 	msg, _ := json.Marshal(map[string]any{
 		"type": "system_log",
 		"line": line,
 	})
-	h.broadcast <- msg
+	select {
+	case h.broadcast <- msg:
+	default:
+		// Drop message if buffer is full
+	}
 }

@@ -204,6 +204,10 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 							w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
 							continue
 						}
+						// Check context before metadata enrichment
+						if ctx.Err() != nil {
+							return
+						}
 						if cfg.DebugLogging {
 							log.Printf("Walker: Enriching metadata for %s", path)
 						}
@@ -233,6 +237,10 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 							continue
 						}
 
+						// Check context before frame extraction loop
+						if ctx.Err() != nil {
+							return
+						}
 						hashes := make([]uint64, len(existing.PHashV2s))
 						copy(hashes, existing.PHashV2s)
 
@@ -323,6 +331,9 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 				}
 
 				// 3. Full Re-index
+				if ctx.Err() != nil {
+					return
+				}
 				meta, err := media.ProbeNative(path)
 				if err != nil {
 					meta, err = media.Probe(ctx, path)

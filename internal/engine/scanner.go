@@ -27,6 +27,7 @@ type Scanner struct {
 	cancel         context.CancelFunc
 	mu             sync.Mutex
 	running        bool
+	stopping       bool
 	current        int
 	total          int
 	phase          string
@@ -48,11 +49,12 @@ func NewScanner(walker *Walker, db *db.Database, reporter ProgressReporter, comp
 
 func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings) {
 	s.mu.Lock()
-	if s.running {
+	if s.running || s.stopping {
 		s.mu.Unlock()
 		return
 	}
 	s.running = true
+	s.stopping = false
 	s.phase = "discovery"
 	s.current = 0
 	s.total = 0
@@ -70,6 +72,7 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 		defer func() {
 			s.mu.Lock()
 			s.running = false
+			s.stopping = false
 			s.mu.Unlock()
 			duration := time.Since(startTime).Seconds()
 			log.Printf("Scanner: Scan finished (duration: %.2fs)", duration)
@@ -205,6 +208,7 @@ func (s *Scanner) Status() map[string]any {
 
 	return map[string]any{
 		"running":          s.running,
+		"stopping":         s.stopping,
 		"current":          s.current,
 		"total":            s.total,
 		"phase":            s.phase,
@@ -216,13 +220,17 @@ func (s *Scanner) Status() map[string]any {
 
 func (s *Scanner) Stop() {
 	s.mu.Lock()
+	if !s.running || s.stopping {
+		s.mu.Unlock()
+		return
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.running = false
-	s.phase = "stopped"
+	s.stopping = true
+	s.phase = "stopping"
 	s.etaSeconds = 0
 	s.mu.Unlock()
 
-	s.BroadcastProgress(s.current, s.total, "stopped", s.lastFile, s.lastDuration, 0)
+	s.BroadcastProgress(s.current, s.total, "stopping", s.lastFile, s.lastDuration, 0)
 }
