@@ -799,7 +799,6 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-size: 13px;
-  text-align: right;
 }
 
 .filter-row .unit {

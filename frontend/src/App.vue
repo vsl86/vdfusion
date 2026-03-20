@@ -260,9 +260,8 @@
       :defaultValue="modalState.defaultValue" :placeholder="modalState.placeholder" :isDanger="modalState.isDanger"
       @confirm="onModalConfirm" @cancel="onModalCancel" />
 
-    <!-- Update Notification (startup silent check) -->
     <transition name="slide-in">
-      <div v-if="updateAvailable" class="update-bar" @click="window.open(updateLink, '_blank')">
+      <div v-if="updateAvailable" class="update-bar" @click="openUpdateLink">
         <span class="update-icon">🚀</span>
         <span class="update-text">New version available: <strong>{{ updateVersion }}</strong></span>
         <span class="update-link">Review changes →</span>
@@ -723,6 +722,10 @@ const saveSuspiciousList = () => {
 
 const copyToClipboard = (text) => {
   navigator.clipboard.writeText(text)
+}
+
+const openUpdateLink = () => {
+  window.open(updateLink.value, '_blank')
 }
 </script>
 

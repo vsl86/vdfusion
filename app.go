@@ -110,11 +110,16 @@ func (a *App) GetResults(offset, limit int) engine.ResultsResponse {
 	return a.resultsManager.GetResultsWrapped(offset, limit)
 }
 
-func (a *App) GetDuplicateStats() map[string]int {
+type DuplicateStats struct {
+	TotalGroups int `json:"total_groups"`
+	TotalFiles  int `json:"total_files"`
+}
+
+func (a *App) GetDuplicateStats() DuplicateStats {
 	_, totalFiles := a.resultsManager.GetAll()
-	return map[string]int{
-		"total_groups": a.resultsManager.GetResultsWrapped(0, 0).Total,
-		"total_files":  totalFiles,
+	return DuplicateStats{
+		TotalGroups: a.resultsManager.GetResultsWrapped(0, 0).Total,
+		TotalFiles:  totalFiles,
 	}
 }
 
