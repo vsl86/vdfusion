@@ -147,6 +147,9 @@ if (!isWails) {
                 if (data.type === "progress" && eventCallbacks["scan_progress"]) {
                     eventCallbacks["scan_progress"].forEach(cb => cb(data));
                 }
+                if (data.type === "results_updated" && eventCallbacks["results_updated"]) {
+                    eventCallbacks["results_updated"].forEach(cb => cb(data));
+                }
                 if (data.type === "app_log") {
                     saveLog('app_log', data);
                     if (eventCallbacks["app_log"]) {
@@ -177,14 +180,14 @@ if (!isWails) {
 }
 else {
     // Wails mode: Global listeners for persistence (Guarded against HMR duplicates)
-    if (!(window as any)._vdf_listeners_init) {
+    if (!(window as any)._v_vdf_listeners_init) {
         WailsEventsOn('app_log', (data) => {
             saveLog('app_log', data);
         });
         WailsEventsOn('system_log', (data) => {
             saveLog('system_log', data);
         });
-        (window as any)._vdf_listeners_init = true;
+        (window as any)._v_vdf_listeners_init = true;
         console.log('RxDB: Global persistence listeners initialized');
     }
 }

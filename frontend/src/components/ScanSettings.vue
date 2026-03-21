@@ -34,7 +34,8 @@
 
   <!-- Full settings page mode -->
   <div v-else class="settings-page">
-    <div class="dashboard-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+    <div class="dashboard-header"
+      style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
       <div>
         <h1>Settings</h1>
         <p>Configure scan behaviour, thresholds, and filters.</p>
@@ -44,8 +45,7 @@
           style="min-width: 120px; transition: all 0.3s ease;" :disabled="!isDirty || saveSuccess" @click="save">
           {{ saveSuccess ? '✓ Saved' : 'Save' }}
         </button>
-        <div v-if="versionInfo" class="version-display"
-          style="font-size: 11px; color: var(--text-muted);">
+        <div v-if="versionInfo" class="version-display" style="font-size: 11px; color: var(--text-muted);">
           Version: {{ versionInfo.current }}
           <button class="check-update-btn" @click="checkUpdates" :disabled="updateLoading"
             style="margin-left: 8px; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; cursor: pointer; color: var(--text-muted);">
@@ -165,7 +165,7 @@
                 <p>{{ scanImpact.message }}</p>
               </div>
             </div>
-            <small v-else>Stable timestamps allow adding more hashes without full re-indexing.</small>
+            <small v-else>Number of frames extracted for the comparison engine. Note: The results UI only displays a maximum of 7 thumbnails.</small>
           </div>
 
           <div class="setting-row">

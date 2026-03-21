@@ -61,6 +61,15 @@ func (r *WailsReporter) BroadcastLog(severity, message string) {
 	}
 }
 
+func (r *WailsReporter) BroadcastResultsUpdated(action string) {
+	if r.ctx != nil {
+		runtime.EventsEmit(r.ctx, "results_updated", map[string]any{
+			"action": action,
+			"time":   time.Now().Format("15:04:05"),
+		})
+	}
+}
+
 func (a *App) BroadcastSystemLog(line string) {
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "system_log", line)
@@ -159,6 +168,7 @@ func (a *App) ExcludeGroup(label string, paths []string) error {
 
 	fmt.Printf("Backend: Excluding group '%s' with %d hashes\n", label, len(hashes))
 	a.reporter.BroadcastLog("info", fmt.Sprintf("Excluded %d files under group '%s'", len(hashes), label))
+	a.reporter.BroadcastResultsUpdated("excluded")
 	return a.db.AddIgnoredGroup(label, hashes)
 }
 
@@ -181,7 +191,7 @@ func (a *App) ResetSettings() error {
 	return a.settings.Reset()
 }
 
-var extractThumbnailFn = func(path string, duration float64, count int, i int) ([]byte, error) {
+var extractThumbnailFn = func(path string, duration float64, i int) ([]byte, error) {
 	timestamp := media.GetStableTimestamp(i, duration)
 	data, err := media.ExtractThumbnailNative(context.Background(), path, timestamp, 160, 0)
 	if err != nil {
@@ -191,6 +201,8 @@ var extractThumbnailFn = func(path string, duration float64, count int, i int) (
 	return data, err
 }
 
+// GetThumbnails returns thumbnails for the given path, duration and count.
+// TODO: TECH DEBT - Implement persistent thumbnail cache storing BLOBs in SQLite.
 func (a *App) GetThumbnails(path string, duration float64, count int) ([]string, error) {
 	if count <= 0 {
 		count = 4
@@ -211,7 +223,7 @@ func (a *App) GetThumbnails(path string, duration float64, count int) ([]string,
 
 	for i := 0; i < count; i++ {
 		ts := media.GetStableTimestamp(i, duration)
-		data, err := extractThumbnailFn(path, duration, count, i)
+		data, err := extractThumbnailFn(path, duration, i)
 		if err != nil || data == nil {
 			continue // Skip failed frames
 		}
@@ -239,7 +251,11 @@ func (a *App) OpenFile(path string) error {
 }
 
 func (a *App) RenameFile(oldPath string, newPath string) error {
-	return os.Rename(oldPath, newPath)
+	err := os.Rename(oldPath, newPath)
+	if err == nil {
+		a.reporter.BroadcastResultsUpdated("renamed")
+	}
+	return err
 }
 
 func (a *App) DeleteFiles(paths []string) error {
@@ -258,6 +274,7 @@ func (a *App) DeleteFiles(paths []string) error {
 			a.reporter.BroadcastLog("success", fmt.Sprintf("Deleted: %s", filepath.Base(p)))
 		}
 	}
+	a.reporter.BroadcastResultsUpdated("deleted")
 	return nil
 }
 

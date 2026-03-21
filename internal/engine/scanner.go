@@ -16,6 +16,7 @@ import (
 type ProgressReporter interface {
 	BroadcastProgress(current, total int, phase string, lastFile string, durationSeconds, estimatedRemainingSeconds float64)
 	BroadcastLog(severity, message string)
+	BroadcastResultsUpdated(action string)
 }
 
 type Scanner struct {
@@ -173,6 +174,9 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 		log.Printf("Scanner: %s", compSummary)
 		s.BroadcastLog("success", compSummary)
 		s.BroadcastProgress(len(validFiles), len(validFiles), "completed", "Finished", duration, 0)
+		if s.reporter != nil {
+			s.reporter.BroadcastResultsUpdated("scan_completed")
+		}
 	}()
 }
 
@@ -194,6 +198,12 @@ func (s *Scanner) BroadcastProgress(current, total int, phase string, lastFile s
 func (s *Scanner) BroadcastLog(severity, message string) {
 	if s.reporter != nil {
 		s.reporter.BroadcastLog(severity, message)
+	}
+}
+
+func (s *Scanner) BroadcastResultsUpdated(action string) {
+	if s.reporter != nil {
+		s.reporter.BroadcastResultsUpdated(action)
 	}
 }
 

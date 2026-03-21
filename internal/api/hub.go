@@ -86,10 +86,24 @@ func (h *Hub) BroadcastLog(severity, message string) {
 		// Drop message if buffer is full
 	}
 }
+
 func (h *Hub) BroadcastSystemLog(line string) {
 	msg, _ := json.Marshal(map[string]any{
 		"type": "system_log",
 		"line": line,
+	})
+	select {
+	case h.broadcast <- msg:
+	default:
+		// Drop message if buffer is full
+	}
+}
+
+func (h *Hub) BroadcastResultsUpdated(action string) {
+	msg, _ := json.Marshal(map[string]any{
+		"type":   "results_updated",
+		"action": action,
+		"time":   time.Now().Format("15:04:05"),
 	})
 	select {
 	case h.broadcast <- msg:
