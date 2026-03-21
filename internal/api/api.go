@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	goruntime "runtime"
@@ -257,6 +258,7 @@ func (s *Server) handleExcludeGroup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	s.hub.BroadcastLog("info", fmt.Sprintf("Excluded group: %s (%d files)", body.Label, len(uniq)))
+	s.hub.BroadcastResultsUpdated("excluded")
 	json.NewEncoder(w).Encode(map[string]any{"status": "excluded", "files_count": len(uniq)})
 }
 
@@ -282,6 +284,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.settings.Get())
 }
 
+// handleGetThumbnails extracts multiple thumbnails for a file.
+// TODO: TECH DEBT - Implement persistent thumbnail cache (see App.GetThumbnails).
 func (s *Server) handleGetThumbnails(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	durationStr := r.URL.Query().Get("duration")
@@ -301,7 +305,12 @@ func (s *Server) handleGetThumbnails(w http.ResponseWriter, r *http.Request) {
 		count = 4
 	}
 
-	var results []string
+	type thumbResult struct {
+		timestamp float64
+		data      string
+	}
+	var thumbs []thumbResult
+
 	for i := 0; i < count; i++ {
 		timestamp := media.GetStableTimestamp(i, duration)
 		data, err := media.ExtractThumbnailNative(r.Context(), path, timestamp, 160, 90)
@@ -310,15 +319,25 @@ func (s *Server) handleGetThumbnails(w http.ResponseWriter, r *http.Request) {
 			data, err = media.ExtractThumbnail(r.Context(), path, timestamp, 160, 90)
 			if err != nil {
 				fmt.Printf("CLI thumbnail extract ALSO failed for %s (%v)\n", path, err)
-			} else if data != nil {
-				fmt.Printf("CLI thumbnail extract succeeded for %s\n", path)
 			}
 		}
 		if err != nil || data == nil {
 			continue
 		}
 		b64 := base64.StdEncoding.EncodeToString(data)
-		results = append(results, fmt.Sprintf("data:image/jpeg;base64,%s", b64))
+		thumbs = append(thumbs, thumbResult{
+			timestamp: timestamp,
+			data:      fmt.Sprintf("data:image/jpeg;base64,%s", b64),
+		})
+	}
+
+	sort.Slice(thumbs, func(i, j int) bool {
+		return thumbs[i].timestamp < thumbs[j].timestamp
+	})
+
+	var results []string
+	for _, t := range thumbs {
+		results = append(results, t.data)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -343,6 +362,7 @@ func (s *Server) handleDeleteFiles(w http.ResponseWriter, r *http.Request) {
 		s.db.DeleteFile(p)
 	}
 	s.resultsManager.RemoveFiles(body.Paths)
+	s.hub.BroadcastResultsUpdated("deleted")
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -372,6 +392,7 @@ func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Renamed %s to %s", body.OldPath, body.NewPath)
 	s.hub.BroadcastLog("info", fmt.Sprintf("Renamed %s to %s", body.OldPath, body.NewPath))
+	s.hub.BroadcastResultsUpdated("renamed")
 	w.WriteHeader(http.StatusOK)
 }
 

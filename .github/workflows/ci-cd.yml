@@ -183,6 +183,16 @@ jobs:
           CXX=x86_64-w64-mingw32-g++ \
           CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
           CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
+          wails build -ldflags "${{ env.LDFLAGS }}" -platform windows/amd64
+
+          # Copy FFmpeg DLLs to bin for inclusion in NSIS installer and for ZIP
+          cp ffmpeg-win-x64/dist/bin/*.dll build/bin/
+
+          CGO_ENABLED=1 \
+          CC=x86_64-w64-mingw32-gcc \
+          CXX=x86_64-w64-mingw32-g++ \
+          CGO_LDFLAGS="${{ env.WINDOWS_AMD64_CGO_LDFLAGS }}" \
+          CGO_CFLAGS="${{ env.WINDOWS_AMD64_CGO_CFLAGS }}" \
           wails build -ldflags "${{ env.LDFLAGS }}" -nsis -webview2=embed -platform windows/amd64
 
       - name: Bundle Dylibs (macOS)
@@ -282,9 +292,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-bins/**/*.exe
+            release-bins/**/*-installer.exe
             release-bins/**/*.dmg
-            release-bins/**/*.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -314,7 +323,7 @@ jobs:
             **Commit:** ${{ github.sha }}
           prerelease: true
           files: |
-            release-bins/**/*.exe
+            release-bins/**/*-installer.exe
             release-bins/**/*.dmg
             release-bins/**/*.zip
         env:

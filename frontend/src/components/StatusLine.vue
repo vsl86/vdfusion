@@ -244,9 +244,8 @@ const reportBug = async () => {
   left: 0;
   right: 0;
   height: 32px;
-  background: #141419;
-  /* Forced dark background */
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 11px;
   z-index: 1000;
@@ -254,14 +253,13 @@ const reportBug = async () => {
   align-items: center;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   font-family: 'Inter', -apple-system, system-ui, sans-serif;
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .status-line.is-scanning {
-  background: #1a1a24;
-  /* Slightly lighter but still dark */
-  border-top-color: var(--accent, #6366f1);
-  box-shadow: 0 -2px 10px rgba(var(--accent-rgb, 99, 102, 241), 0.2);
+  background: var(--surface);
+  border-top-color: var(--accent);
+  box-shadow: 0 -2px 10px rgba(var(--accent-rgb), 0.1);
 }
 
 .status-container {
@@ -310,7 +308,7 @@ const reportBug = async () => {
 .status-divider {
   width: 1px;
   height: 12px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border);
 }
 
 /* Progress indicator */
@@ -324,10 +322,10 @@ const reportBug = async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--surface);
   padding: 4px 12px;
   border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
   min-width: 180px;
   height: 20px;
 }
@@ -341,7 +339,7 @@ const reportBug = async () => {
 .phase {
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--accent, #6366f1);
+  color: var(--accent);
   font-size: 10px;
 }
 
@@ -353,7 +351,7 @@ const reportBug = async () => {
 .mini-progress-track {
   flex-grow: 1;
   height: 3px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg);
   border-radius: 2px;
   overflow: hidden;
   position: relative;
@@ -365,16 +363,16 @@ const reportBug = async () => {
   left: 0;
   top: 0;
   bottom: 0;
-  background: var(--accent, #6366f1);
-  box-shadow: 0 0 8px var(--accent, #6366f1);
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent);
   transition: width 0.3s ease;
 }
 
 .spinner {
   width: 10px;
   height: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--accent, #6366f1);
+  border: 2px solid var(--bg);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -426,7 +424,7 @@ const reportBug = async () => {
 .wails-indicator {
   font-size: 11px;
   padding-left: 8px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -473,7 +471,7 @@ const reportBug = async () => {
 .scanning-pulse-mobile {
   display: none;
   padding-left: 12px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 1px solid var(--border);
 }
 
 .pulse-dot {
@@ -543,12 +541,12 @@ const reportBug = async () => {
 }
 
 .btn-clear:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--surface);
 }
 
 .btn-clear.active {
-  background: rgba(99, 102, 241, 0.2);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-primary, #fff);
 }
 
 .log-drawer {
@@ -557,8 +555,8 @@ const reportBug = async () => {
   right: 16px;
   width: 450px;
   max-height: 400px;
-  background: #1a1a24;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-bottom: none;
   border-radius: 8px 8px 0 0;
   display: flex;
@@ -573,8 +571,8 @@ const reportBug = async () => {
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
 }
 
 .log-title {
@@ -588,9 +586,9 @@ const reportBug = async () => {
 }
 
 .log-btn {
-  background: rgba(255, 255, 255, 0.1);
-  border: none;
-  color: #a0a0b0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
   padding: 4px 10px;
   border-radius: 4px;
   cursor: pointer;
@@ -626,7 +624,7 @@ const reportBug = async () => {
   display: flex;
   gap: 12px;
   padding: 4px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
 

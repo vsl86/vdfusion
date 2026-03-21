@@ -8,6 +8,14 @@
     </div>
 
     <div v-if="!preview" class="results-toolbar">
+      <div v-if="syncNotice" class="sync-notice">
+        <span class="sync-icon">🔄</span>
+        <span class="sync-text">{{ syncNotice }}</span>
+        <div class="sync-actions">
+          <button class="mini-btn primary" @click="refreshResults">Refresh Now</button>
+          <button class="mini-btn" @click="syncNotice = ''">Dismiss</button>
+        </div>
+      </div>
       <div class="toolbar-left">
         <div class="dropdown">
           <button class="tool-btn">Selection ▾</button>
@@ -176,7 +184,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, inject, watch } from 'vue'
-import { GetResults, GetThumbnails, GetSettings, ExcludeGroup, DeleteFiles, OpenFile, RenameFile, GetStreamUrl } from '../api'
+import { GetResults, GetThumbnails, GetSettings, ExcludeGroup, DeleteFiles, OpenFile, RenameFile, GetStreamUrl, EventsOn } from '../api'
 
 const showModal = inject('showModal')
 
@@ -203,6 +211,7 @@ const scrollObserver = ref(null)
 const loading = ref(false)
 const sortKey = ref('similarity') // 'similarity', 'size', 'duration', 'path'
 const sortOrder = ref('desc') // 'asc', 'desc'
+const syncNotice = ref('')
 
 const isFetchingThumbnails = ref(false)
 const thumbnailProgress = ref({ current: 0, total: 0 })
@@ -350,6 +359,11 @@ const setStatus = (msg, duration = 3000) => {
   if (duration > 0) setTimeout(() => { if (statusMsg.value === msg) statusMsg.value = '' }, duration)
 }
 
+const refreshResults = () => {
+  syncNotice.value = ''
+  loadResults()
+}
+
 const displayGroups = computed(() => {
   let groups = results.value
 
@@ -460,6 +474,20 @@ onMounted(() => {
 
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('mousedown', closeContextMenu)
+
+  EventsOn('results_updated', (data) => {
+    if (props.preview) return // Don't show in preview/dashboard
+    
+    if (data.action === 'scan_completed') {
+      syncNotice.value = 'A manual scan has finished in another tab.'
+    } else if (data.action === 'deleted') {
+      syncNotice.value = 'Files were deleted from another tab.'
+    } else if (data.action === 'excluded') {
+      syncNotice.value = 'Items were marked as excluded in another session.'
+    } else {
+      syncNotice.value = 'The results database was updated.'
+    }
+  })
 })
 
 onUnmounted(() => {
@@ -1409,6 +1437,48 @@ tr:hover .path-actions {
   height: 14px;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+
+.sync-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 12px 20px;
+  margin-bottom: 16px;
+  animation: slide-down 0.3s ease-out;
+}
+
+.sync-icon {
+  font-size: 18px;
+  margin-right: 12px;
+}
+
+.sync-text {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.sync-actions {
+  display: flex;
+  gap: 12px;
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Keyboard Navigation focus */
