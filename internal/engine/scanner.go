@@ -16,7 +16,7 @@ import (
 type ProgressReporter interface {
 	BroadcastProgress(current, total int, phase string, lastFile string, durationSeconds, estimatedRemainingSeconds float64)
 	BroadcastLog(severity, message string)
-	BroadcastResultsUpdated(action string)
+	BroadcastResultsUpdated(action string, count int)
 }
 
 type Scanner struct {
@@ -175,7 +175,7 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 		s.BroadcastLog("success", compSummary)
 		s.BroadcastProgress(len(validFiles), len(validFiles), "completed", "Finished", duration, 0)
 		if s.reporter != nil {
-			s.reporter.BroadcastResultsUpdated("scan_completed")
+			s.reporter.BroadcastResultsUpdated("scan_completed", len(results))
 		}
 	}()
 }
@@ -201,9 +201,9 @@ func (s *Scanner) BroadcastLog(severity, message string) {
 	}
 }
 
-func (s *Scanner) BroadcastResultsUpdated(action string) {
+func (s *Scanner) BroadcastResultsUpdated(action string, count int) {
 	if s.reporter != nil {
-		s.reporter.BroadcastResultsUpdated(action)
+		s.reporter.BroadcastResultsUpdated(action, count)
 	}
 }
 

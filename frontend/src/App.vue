@@ -226,7 +226,7 @@
             <h1>All Results</h1>
             <p>Browse and manage all duplicate groups found.</p>
           </div>
-          <ResultsGrid ref="allResultsRef" :preview="false" @open-preview="openVideoPreview"
+          <ResultsGrid ref="allResultsRef" :preview="false" :scanning="scanning" @open-preview="openVideoPreview"
             @selection-change="onSelectionChange" @results-changed="refreshScanSummary" />
         </div>
       </div>

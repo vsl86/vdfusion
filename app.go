@@ -61,13 +61,12 @@ func (r *WailsReporter) BroadcastLog(severity, message string) {
 	}
 }
 
-func (r *WailsReporter) BroadcastResultsUpdated(action string) {
-	if r.ctx != nil {
-		runtime.EventsEmit(r.ctx, "results_updated", map[string]any{
-			"action": action,
-			"time":   time.Now().Format("15:04:05"),
-		})
-	}
+func (r *WailsReporter) BroadcastResultsUpdated(action string, count int) {
+	runtime.EventsEmit(r.ctx, "results_updated", map[string]any{
+		"action": action,
+		"count":  count,
+		"time":   time.Now().Format("15:04:05"),
+	})
 }
 
 func (a *App) BroadcastSystemLog(line string) {
@@ -168,8 +167,12 @@ func (a *App) ExcludeGroup(label string, paths []string) error {
 
 	fmt.Printf("Backend: Excluding group '%s' with %d hashes\n", label, len(hashes))
 	a.reporter.BroadcastLog("info", fmt.Sprintf("Excluded %d files under group '%s'", len(hashes), label))
-	a.reporter.BroadcastResultsUpdated("excluded")
-	return a.db.AddIgnoredGroup(label, hashes)
+	if err := a.db.AddIgnoredGroup(label, hashes); err != nil {
+		return err
+	}
+	a.resultsManager.RemoveFiles(paths)
+	a.reporter.BroadcastResultsUpdated("excluded", a.resultsManager.Count())
+	return nil
 }
 
 func (a *App) GetIgnoredGroups() ([]db.IgnoredGroup, error) {
@@ -252,10 +255,12 @@ func (a *App) OpenFile(path string) error {
 
 func (a *App) RenameFile(oldPath string, newPath string) error {
 	err := os.Rename(oldPath, newPath)
-	if err == nil {
-		a.reporter.BroadcastResultsUpdated("renamed")
+	if err != nil {
+		return err
 	}
-	return err
+	a.resultsManager.RenameFile(oldPath, newPath)
+	a.reporter.BroadcastResultsUpdated("renamed", a.resultsManager.Count())
+	return nil
 }
 
 func (a *App) DeleteFiles(paths []string) error {
@@ -274,7 +279,8 @@ func (a *App) DeleteFiles(paths []string) error {
 			a.reporter.BroadcastLog("success", fmt.Sprintf("Deleted: %s", filepath.Base(p)))
 		}
 	}
-	a.reporter.BroadcastResultsUpdated("deleted")
+	a.resultsManager.RemoveFiles(paths)
+	a.reporter.BroadcastResultsUpdated("deleted", a.resultsManager.Count())
 	return nil
 }
 

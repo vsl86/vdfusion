@@ -168,6 +168,12 @@ func (rm *ResultsManager) GetAll() ([]DuplicateGroup, int) {
 	return rm.results, rm.totalFiles
 }
 
+func (rm *ResultsManager) Count() int {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return len(rm.results)
+}
+
 func (rm *ResultsManager) Clear() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()

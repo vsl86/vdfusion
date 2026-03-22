@@ -99,10 +99,11 @@ func (h *Hub) BroadcastSystemLog(line string) {
 	}
 }
 
-func (h *Hub) BroadcastResultsUpdated(action string) {
+func (h *Hub) BroadcastResultsUpdated(action string, count int) {
 	msg, _ := json.Marshal(map[string]any{
 		"type":   "results_updated",
 		"action": action,
+		"count":  count,
 		"time":   time.Now().Format("15:04:05"),
 	})
 	select {
