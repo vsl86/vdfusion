@@ -258,7 +258,7 @@ func (s *Server) handleExcludeGroup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	s.hub.BroadcastLog("info", fmt.Sprintf("Excluded group: %s (%d files)", body.Label, len(uniq)))
-	s.hub.BroadcastResultsUpdated("excluded")
+	s.hub.BroadcastResultsUpdated("excluded", s.resultsManager.Count())
 	json.NewEncoder(w).Encode(map[string]any{"status": "excluded", "files_count": len(uniq)})
 }
 
@@ -362,7 +362,7 @@ func (s *Server) handleDeleteFiles(w http.ResponseWriter, r *http.Request) {
 		s.db.DeleteFile(p)
 	}
 	s.resultsManager.RemoveFiles(body.Paths)
-	s.hub.BroadcastResultsUpdated("deleted")
+	s.hub.BroadcastResultsUpdated("deleted", s.resultsManager.Count())
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -392,7 +392,7 @@ func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Renamed %s to %s", body.OldPath, body.NewPath)
 	s.hub.BroadcastLog("info", fmt.Sprintf("Renamed %s to %s", body.OldPath, body.NewPath))
-	s.hub.BroadcastResultsUpdated("renamed")
+	s.hub.BroadcastResultsUpdated("renamed", s.resultsManager.Count())
 	w.WriteHeader(http.StatusOK)
 }
 

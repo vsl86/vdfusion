@@ -8,14 +8,18 @@
     </div>
 
     <div v-if="!preview" class="results-toolbar">
-      <div v-if="syncNotice" class="sync-notice">
-        <span class="sync-icon">🔄</span>
-        <span class="sync-text">{{ syncNotice }}</span>
-        <div class="sync-actions">
-          <button class="mini-btn primary" @click="refreshResults">Refresh Now</button>
-          <button class="mini-btn" @click="syncNotice = ''">Dismiss</button>
+      <!-- Sync Notice as a non-intrusive toast -->
+      <transition name="slide-fade">
+        <div v-if="syncNotice" class="sync-notice-toast">
+          <span class="sync-icon">🔄</span>
+          <span class="sync-text">{{ syncNotice }}</span>
+          <div class="sync-actions">
+            <button class="mini-btn primary" @click="refreshResults">Refresh</button>
+            <button class="mini-btn-close" @click="syncNotice = ''">×</button>
+          </div>
         </div>
-      </div>
+      </transition>
+
       <div class="toolbar-left">
         <div class="dropdown">
           <button class="tool-btn">Selection ▾</button>
@@ -188,7 +192,10 @@ import { GetResults, GetThumbnails, GetSettings, ExcludeGroup, DeleteFiles, Open
 
 const showModal = inject('showModal')
 
-const props = defineProps({ preview: { type: Boolean, default: false } })
+const props = defineProps({ 
+  preview: { type: Boolean, default: false },
+  scanning: { type: Boolean, default: false }
+})
 const emit = defineEmits(['viewAll', 'open-preview'])
 
 const results = ref([])
@@ -476,16 +483,29 @@ onMounted(() => {
   window.addEventListener('mousedown', closeContextMenu)
 
   EventsOn('results_updated', (data) => {
-    if (props.preview) return // Don't show in preview/dashboard
+    if (props.preview) return 
     
+    // If we are currently scanning or just finished (loading), 
+    // we should just refresh automatically or ignore the notice
+    if (props.scanning || loading.value) {
+      if (!loading.value) refreshResults()
+      return
+    }
+
+    // New logic: do not show notice if both current and new results are empty
+    if (data.action === 'scan_completed' && results.value.length === 0 && (data.count === 0 || data.count === undefined)) {
+      console.log('Suppressing sync notice: both current and new results are empty')
+      return
+    }
+
     if (data.action === 'scan_completed') {
-      syncNotice.value = 'A manual scan has finished in another tab.'
+      syncNotice.value = 'Results updated (scan finished elsewhere).'
     } else if (data.action === 'deleted') {
-      syncNotice.value = 'Files were deleted from another tab.'
+      syncNotice.value = 'Results updated (files deleted elsewhere).'
     } else if (data.action === 'excluded') {
-      syncNotice.value = 'Items were marked as excluded in another session.'
+      syncNotice.value = 'Results updated (exclusions changed).'
     } else {
-      syncNotice.value = 'The results database was updated.'
+      syncNotice.value = 'Results updated.'
     }
   })
 })
@@ -1259,6 +1279,7 @@ tr:hover .path-actions {
 
 /* Toolbar */
 .results-toolbar {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1436,49 +1457,69 @@ tr:hover .path-actions {
   width: 14px;
   height: 14px;
   accent-color: var(--accent);
-  cursor: pointer;
 }
 
-
-.sync-notice {
+.sync-notice-toast {
+  position: absolute;
+  top: -60px;
+  right: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   background: rgba(var(--accent-rgb), 0.1);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  padding: 12px 20px;
-  margin-bottom: 16px;
-  animation: slide-down 0.3s ease-out;
+  border-radius: 30px;
+  padding: 6px 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .sync-icon {
-  font-size: 18px;
-  margin-right: 12px;
+  font-size: 14px;
+  margin-right: 10px;
 }
 
 .sync-text {
-  flex: 1;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text);
+  margin-right: 15px;
+  white-space: nowrap;
 }
 
 .sync-actions {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
 }
 
-@keyframes slide-down {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
+.mini-btn-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
 
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.mini-btn-close:hover {
+  color: var(--text);
+}
+
+.slide-fade-enter-active {
+  transition: all 0.3s ease-out;
+}
+
+.slide-fade-leave-active {
+  transition: all 0.2s cubic-bezier(1, 0.5, 0.8, 1);
+}
+
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  transform: translateY(-10px);
+  opacity: 0;
 }
 
 /* Keyboard Navigation focus */
