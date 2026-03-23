@@ -315,11 +315,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Latest Unstable Build (Main Branch)"
+          target_commitish: main
+          name: "latest (unstable)"
+          make_latest: true
           body: |
             This is a floating release containing the latest builds from the `main` branch.
-            Automatically updated on every push to `main`.
-            
             **Commit:** ${{ github.sha }}
           prerelease: true
           files: |

@@ -244,9 +244,9 @@ const reportBug = async () => {
   left: 0;
   right: 0;
   height: 32px;
-  background: var(--surface-alt);
-  border-top: 1px solid var(--border);
-  color: var(--text-secondary);
+  background: #11111a;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
   font-size: 11px;
   z-index: 1000;
   display: flex;
@@ -257,9 +257,9 @@ const reportBug = async () => {
 }
 
 .status-line.is-scanning {
-  background: var(--surface);
+  background: #09090e;
   border-top-color: var(--accent);
-  box-shadow: 0 -2px 10px rgba(var(--accent-rgb), 0.1);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 
 .status-container {
@@ -276,6 +276,7 @@ const reportBug = async () => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .status-item {
@@ -291,7 +292,7 @@ const reportBug = async () => {
 }
 
 .status-value {
-  color: var(--text);
+  color: #e2e8f0;
   font-weight: 600;
 }
 
@@ -308,7 +309,7 @@ const reportBug = async () => {
 .status-divider {
   width: 1px;
   height: 12px;
-  background: var(--border);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 /* Progress indicator */
@@ -322,10 +323,10 @@ const reportBug = async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--surface);
+  background: #09090e;
   padding: 4px 12px;
   border-radius: 20px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   min-width: 180px;
   height: 20px;
 }
@@ -339,19 +340,19 @@ const reportBug = async () => {
 .phase {
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--accent);
+  color: #60a5fa;
   font-size: 10px;
 }
 
 .count {
-  color: var(--text);
+  color: #cbd5e1;
   font-size: 10px;
 }
 
 .mini-progress-track {
   flex-grow: 1;
   height: 3px;
-  background: var(--bg);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 2px;
   overflow: hidden;
   position: relative;
@@ -371,7 +372,7 @@ const reportBug = async () => {
 .spinner {
   width: 10px;
   height: 10px;
-  border: 2px solid var(--bg);
+  border: 2px solid rgba(255, 255, 255, 0.1);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -497,6 +498,18 @@ const reportBug = async () => {
   }
 }
 
+@media (max-width: 1250px) {
+  .mini-progress-track {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .progress-center {
+    display: none;
+  }
+}
+
 @media (max-width: 768px) {
 
   .vitals .status-item:not(:first-child),
@@ -571,8 +584,8 @@ const reportBug = async () => {
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
-  background: var(--surface-alt);
-  border-bottom: 1px solid var(--border);
+  background: #11111a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .log-title {
