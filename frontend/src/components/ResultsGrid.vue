@@ -57,8 +57,10 @@
             </label>
           </div>
         </div>
-        <button v-if="!preview" class="tool-btn fetch-all-btn" :class="{ 'fetching-active': isFetchingThumbnails }" @click="fetchAllThumbnails">
-          <span v-if="isFetchingThumbnails">Fetching {{ thumbnailProgress.current }}/{{ thumbnailProgress.total }}</span>
+        <button v-if="!preview" class="tool-btn fetch-all-btn" :class="{ 'fetching-active': isFetchingThumbnails }"
+          @click="fetchAllThumbnails">
+          <span v-if="isFetchingThumbnails">Fetching {{ thumbnailProgress.current }}/{{ thumbnailProgress.total
+            }}</span>
           <span v-else>Fetch All Thumbnails</span>
         </button>
       </div>
@@ -72,8 +74,8 @@
     <div v-if="results.length > 0">
       <div v-for="(group, gi) in displayGroups" :key="group.id" class="group-card"
         :class="{ 'group-identical': isIdenticalGroup(group) }">
-        <div class="group-header" :class="{ 'focused': isFocused(gi, -1) }" :id="`group-${gi}`"
-          @click="toggleGroup(gi)" @mousedown="focusedItem = { groupIndex: gi, fileIndex: -1 }"
+        <div class="group-header" :class="{ 'focused': isFocused(gi, -1) }" :id="`group-${gi}`" @click="toggleGroup(gi)"
+          @mousedown="focusedItem = { groupIndex: gi, fileIndex: -1 }"
           @contextmenu.prevent="openContextMenu($event, 'group', { gi, group })">
           <div class="group-check" @click.stop>
             <input type="checkbox" :checked="isGroupSelected(group)" @change="toggleGroupSelection(group)" />
@@ -192,7 +194,7 @@ import { GetResults, GetThumbnails, GetSettings, ExcludeGroup, DeleteFiles, Open
 
 const showModal = inject('showModal')
 
-const props = defineProps({ 
+const props = defineProps({
   preview: { type: Boolean, default: false },
   scanning: { type: Boolean, default: false }
 })
@@ -222,6 +224,7 @@ const syncNotice = ref('')
 
 const isFetchingThumbnails = ref(false)
 const thumbnailProgress = ref({ current: 0, total: 0 })
+const lastLocalActionTime = ref(0)
 
 // Keyboard navigation focus state
 // fileIndex === -1 means the group header is focused
@@ -483,8 +486,14 @@ onMounted(() => {
   window.addEventListener('mousedown', closeContextMenu)
 
   EventsOn('results_updated', (data) => {
-    if (props.preview) return 
-    
+    if (props.preview) return
+
+    // Ignore updates if they are immediately after a local action (self-suppression)
+    if (Date.now() - lastLocalActionTime.value < 5000) {
+      console.log('Ignoring sync notice: triggered by local action')
+      return
+    }
+
     // If we are currently scanning or just finished (loading), 
     // we should just refresh automatically or ignore the notice
     if (props.scanning || loading.value) {
@@ -744,6 +753,7 @@ const deleteItem = async (path) => {
 
   if (confirmed) {
     try {
+      lastLocalActionTime.value = Date.now()
       setStatus('Deleting...')
       await DeleteFiles([path])
       const groupIndex = results.value.findIndex(g => g.files.some(f => f.path === path))
@@ -800,6 +810,7 @@ const renameFile = async (file) => {
     const parent = file.path.substring(0, file.path.lastIndexOf(oldBase))
     const newPath = parent + newName
     try {
+      lastLocalActionTime.value = Date.now()
       setStatus('Renaming...')
       await RenameFile(file.path, newPath)
 
@@ -894,6 +905,7 @@ const deleteSelected = async () => {
 
   if (confirmed) {
     try {
+      lastLocalActionTime.value = Date.now()
       setStatus('Deleting...')
       const deletedSize = selectionTotalSize.value
       await DeleteFiles(paths)
@@ -965,6 +977,7 @@ const markNotMatch = async () => {
 
     if (!confirmed) return
 
+    lastLocalActionTime.value = Date.now()
     setStatus('Processing exclusions...')
     let done = 0
     const total = groupsToExclude.length
