@@ -56,14 +56,16 @@
         <div class="status-item wails-indicator" v-if="isWails">
           <span class="indicator-dot online"></span>
           App <span class="version-tag">{{ appVersion }}</span>
-          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link" title="A new version is available!">
+          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link"
+            title="A new version is available!">
             🚀 New Version
           </a>
         </div>
         <div class="status-item wails-indicator" v-else>
           <span class="indicator-dot web"></span>
           Web UI <span class="version-tag">{{ appVersion }}</span>
-          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link" title="A new version is available!">
+          <a v-if="updateAvailable" :href="updateAvailable.url" target="_blank" class="update-link"
+            title="A new version is available!">
             🚀 New Version
           </a>
         </div>
@@ -454,9 +456,20 @@ const reportBug = async () => {
 }
 
 @keyframes pulse-update {
-  0% { opacity: 0.7; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.05); }
-  100% { opacity: 0.7; transform: scale(1); }
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
 }
 
 .bug-btn {
@@ -568,8 +581,8 @@ const reportBug = async () => {
   right: 16px;
   width: 450px;
   max-height: 400px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: #1a1d27;
+  border: 1px solid #2e3240;
   border-bottom: none;
   border-radius: 8px 8px 0 0;
   display: flex;
@@ -584,13 +597,13 @@ const reportBug = async () => {
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
-  background: #11111a;
+  background: #1a1d27;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .log-title {
   font-weight: 600;
-  color: var(--text);
+  color: #e2e8f0;
 }
 
 .log-actions {
@@ -637,7 +650,7 @@ const reportBug = async () => {
   display: flex;
   gap: 12px;
   padding: 4px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid #2e3240;
   font-size: 11px;
 }
 
