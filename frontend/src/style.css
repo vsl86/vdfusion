@@ -356,7 +356,7 @@ body {
 }
 
 .fetch-all-btn.fetching-active {
-  color: white;
+  color: var(--on-primary);
   border-color: transparent;
   background: var(--primary);
   pointer-events: none;
