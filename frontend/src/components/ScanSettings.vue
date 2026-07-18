@@ -228,6 +228,43 @@
     <DirPicker v-if="pickerVisible" :initial-path="pickerTargetValue" @close="pickerVisible = false"
       @select="onDirSelected" />
 
+    <!-- Neural Backend Configuration -->
+    <div class="card mb-3">
+      <div class="card-header">Neural Backend (CLIP Vision)</div>
+      <div class="card-body" style="display:block; padding: 16px">
+        <label class="filter-check">
+          <input type="checkbox" v-model="settings.neural_backend_enabled" />
+          Enable Remote Neural Backend
+        </label>
+        <div v-if="settings.neural_backend_enabled" class="impact-preview" style="margin-top: 8px;">
+          <span class="impact-icon">🧠</span>
+          <div class="impact-content">
+            <strong>Neural vision analysis enabled</strong>
+            <p>Duplicate comparison will be offloaded to CLIP ViT-B/32 ONNX backend running on your host.</p>
+          </div>
+        </div>
+
+        <div v-if="settings.neural_backend_enabled" style="margin-top: 16px; padding-left: 24px">
+          <div class="setting-row">
+            <label>Backend Server URL</label>
+            <div style="display: flex; gap: 8px; margin-top: 4px;">
+              <input v-model="settings.neural_backend_url" class="remote-url-input" placeholder="http://192.168.1.10:8765" />
+              <button class="action-btn secondary" style="padding: 0 16px; height: 36px;" @click="testNeuralBackendConnection" :disabled="neuralTestLoading">
+                {{ neuralTestLoading ? 'Testing...' : 'Test Connection' }}
+              </button>
+            </div>
+            <small style="display: block; margin-top: 6px; color: var(--text-secondary);">
+              Make sure the model service is running on the target port before starting a scan.
+            </small>
+          </div>
+
+          <div v-if="neuralTestResult" class="test-badge" :class="neuralTestResult.success ? 'success' : 'error'">
+            {{ neuralTestResult.message }}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- DB Management -->
     <div class="card mb-3">
       <div class="card-header">Database Management</div>
@@ -316,7 +353,7 @@
 
 <script setup>
 import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
-import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates } from '../api'
+import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend } from '../api'
 import NumberInput from './NumberInput.vue'
 import SliderFine from './SliderFine.vue'
 import DirPicker from './DirPicker.vue'
@@ -344,7 +381,9 @@ const settings = ref({
   filter_by_file_size: false,
   minimum_file_size: 0,
   maximum_file_size: 0,
-  cleanup_orphans: false
+  cleanup_orphans: false,
+  neural_backend_enabled: false,
+  neural_backend_url: ''
 })
 
 const baseSettings = ref(null)
@@ -374,6 +413,32 @@ const testResult = ref(null)
 const versionInfo = ref(null)
 const updateLoading = ref(false)
 const updateAvailable = ref(null)
+
+const neuralTestLoading = ref(false)
+const neuralTestResult = ref(null)
+
+const testNeuralBackendConnection = async () => {
+  if (!settings.value.neural_backend_url) {
+    neuralTestResult.value = { success: false, message: 'Please enter a server URL first' }
+    return
+  }
+  neuralTestLoading.value = true
+  neuralTestResult.value = null
+  try {
+    const res = await TestNeuralBackend(settings.value.neural_backend_url)
+    if (res && res.status === 'ok') {
+      const modelName = res.model || 'CLIP ViT-B/32'
+      const providers = res.providers ? ` (${res.providers.join(', ')})` : ''
+      neuralTestResult.value = { success: true, message: `Connected! Running ${modelName}${providers}` }
+    } else {
+      neuralTestResult.value = { success: false, message: 'Unexpected response from backend' }
+    }
+  } catch (e) {
+    neuralTestResult.value = { success: false, message: `Connection failed: ${e.message}` }
+  } finally {
+    neuralTestLoading.value = false
+  }
+}
 
 const checkUpdates = async () => {
   updateLoading.value = true

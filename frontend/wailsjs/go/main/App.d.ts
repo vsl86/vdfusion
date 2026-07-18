@@ -61,3 +61,5 @@ export function SaveSettings(arg1:config.Settings):Promise<void>;
 export function StartScan(arg1:Array<string>):Promise<void>;
 
 export function StopScan():Promise<void>;
+
+export function TestNeuralBackend(arg1:string):Promise<Record<string, any>>;

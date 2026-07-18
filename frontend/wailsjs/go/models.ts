@@ -20,6 +20,8 @@ export namespace config {
 	    show_thumbnails: boolean;
 	    cleanup_orphans: boolean;
 	    debug_logging: boolean;
+	    neural_backend_enabled: boolean;
+	    neural_backend_url: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -46,6 +48,8 @@ export namespace config {
 	        this.show_thumbnails = source["show_thumbnails"];
 	        this.cleanup_orphans = source["cleanup_orphans"];
 	        this.debug_logging = source["debug_logging"];
+	        this.neural_backend_enabled = source["neural_backend_enabled"];
+	        this.neural_backend_url = source["neural_backend_url"];
 	    }
 	}
 

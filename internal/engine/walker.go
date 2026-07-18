@@ -15,12 +15,14 @@ import (
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
 	"vdfusion/internal/media"
+	"vdfusion/internal/neural"
 	"vdfusion/internal/phash"
 )
 
 type Walker struct {
-	db       *db.Database
-	reporter ProgressReporter
+	db           *db.Database
+	reporter     ProgressReporter
+	neuralClient *neural.Client // optional; nil = pHash-only mode
 }
 
 func NewWalker(d *db.Database, reporter ProgressReporter) *Walker {
@@ -29,6 +31,10 @@ func NewWalker(d *db.Database, reporter ProgressReporter) *Walker {
 
 func (w *Walker) SetReporter(reporter ProgressReporter) {
 	w.reporter = reporter
+}
+
+func (w *Walker) SetNeuralClient(c *neural.Client) {
+	w.neuralClient = c
 }
 
 func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Settings) (map[string]bool, error) {
@@ -344,6 +350,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 				}
 
 				var hashes []uint64
+				var jpegFrames [][]byte // collected for neural embedding if client is active
 				for i := 0; i < thumbCount; i++ {
 					timestamp := media.GetStableTimestamp(i, meta.Duration)
 					gray, err := media.ExtractGray32x32Native(ctx, path, timestamp)
@@ -352,6 +359,16 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					}
 					if err == nil {
 						hashes = append(hashes, phash.ComputeV2(gray))
+						// Also grab JPEG for neural embedding when needed
+						if w.neuralClient != nil {
+							jpeg, jerr := media.ExtractThumbnailNative(ctx, path, timestamp, 224, 0)
+							if jerr != nil {
+								jpeg, _ = media.ExtractThumbnail(ctx, path, timestamp, 224, 224)
+							}
+							if jpeg != nil {
+								jpegFrames = append(jpegFrames, jpeg)
+							}
+						}
 					}
 				}
 				if len(hashes) == 0 {
@@ -359,7 +376,18 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					continue
 				}
 
-				err = w.db.UpsertFile(path, fileInfo.Size(), modTime, meta.Duration, meta.Width, meta.Height, hashes, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings)
+				// Attempt neural embedding for new/changed files
+				var neuralBlob []byte
+				if w.neuralClient != nil && len(jpegFrames) > 0 {
+					embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
+					if nerr != nil {
+						log.Printf("Walker: neural embed failed for %s: %v", path, nerr)
+					} else {
+						neuralBlob = neural.PackEmbeddings(embeddings)
+					}
+				}
+
+				err = w.db.UpsertFileWithNeural(path, fileInfo.Size(), modTime, meta.Duration, meta.Width, meta.Height, hashes, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings, neuralBlob)
 				if err == nil {
 					dirtyMu.Lock()
 					dirtyPaths[path] = true

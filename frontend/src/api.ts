@@ -254,6 +254,21 @@ export async function SaveSettings(settings: config.Settings): Promise<void> {
     }).then(r => r.json());
 }
 
+export async function TestNeuralBackend(url: string): Promise<any> {
+    if (isWails) return WailsApp.TestNeuralBackend(url);
+    return fetch(`${apiBase}/api/settings/test-neural`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+    }).then(async r => {
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({ error: 'Unknown error' }));
+            throw new Error(err.error || `HTTP ${r.status}`);
+        }
+        return r.json();
+    });
+}
+
 export async function GetResults(offset: number = 0, limit: number = 50): Promise<engine.ResultsResponse> {
     if (isWails) {
         return WailsApp.GetResults(offset, limit);
