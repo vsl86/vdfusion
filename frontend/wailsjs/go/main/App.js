@@ -113,3 +113,7 @@ export function StartScan(arg1) {
 export function StopScan() {
   return window['go']['main']['App']['StopScan']();
 }
+
+export function TestNeuralBackend(arg1) {
+  return window['go']['main']['App']['TestNeuralBackend'](arg1);
+}

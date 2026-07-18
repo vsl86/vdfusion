@@ -34,6 +34,10 @@ type Settings struct {
 	CleanupOrphans bool `json:"cleanup_orphans"`
 
 	DebugLogging bool `json:"debug_logging"`
+
+	// Neural backend — remote CLIP ViT-B/32 ONNX service
+	NeuralBackendEnabled bool   `json:"neural_backend_enabled"`
+	NeuralBackendURL     string `json:"neural_backend_url"`
 }
 
 type SettingsManager struct {

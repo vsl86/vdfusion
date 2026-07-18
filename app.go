@@ -20,6 +20,7 @@ import (
 	"vdfusion/internal/db"
 	"vdfusion/internal/engine"
 	"vdfusion/internal/media"
+	"vdfusion/internal/neural"
 	"vdfusion/internal/syslog"
 	"vdfusion/internal/utils"
 )
@@ -86,6 +87,13 @@ func NewApp(database *db.Database, sm *config.SettingsManager) *App {
 	scanner := engine.NewScanner(walker, database, reporter, compare, resultsManager)
 	walker.SetReporter(scanner)
 
+	// Wire neural client if enabled in settings
+	cfg := sm.Get()
+	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		client := neural.NewClient(cfg.NeuralBackendURL)
+		scanner.SetNeuralClient(client)
+	}
+
 	return &App{
 		db:             database,
 		settings:       sm,
@@ -136,7 +144,39 @@ func (a *App) GetSettings() config.Settings {
 }
 
 func (a *App) SaveSettings(cfg config.Settings) error {
-	return a.settings.Update(cfg)
+	err := a.settings.Update(cfg)
+	if err != nil {
+		return err
+	}
+	// Re-wire neural client whenever settings change
+	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		client := neural.NewClient(cfg.NeuralBackendURL)
+		a.scanner.SetNeuralClient(client)
+	} else {
+		a.scanner.SetNeuralClient(nil)
+	}
+	return nil
+}
+
+// TestNeuralBackend pings the neural backend at the given URL and returns
+// its health/info payload. Used by the Settings UI to show a status badge.
+func (a *App) TestNeuralBackend(url string) (map[string]any, error) {
+	if url == "" {
+		return nil, fmt.Errorf("no URL provided")
+	}
+	client := neural.NewClient(url)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !client.HealthCheck(ctx) {
+		return nil, fmt.Errorf("backend unreachable at %s", url)
+	}
+	info, err := client.Info(ctx)
+	if err != nil {
+		// Health OK but info failed — still return ok
+		info = map[string]any{"status": "ok"}
+	}
+	info["status"] = "ok"
+	return info, nil
 }
 
 func (a *App) ExcludeGroup(label string, paths []string) error {
@@ -254,6 +294,10 @@ func (a *App) OpenFile(path string) error {
 }
 
 func (a *App) RenameFile(oldPath string, newPath string) error {
+	if _, err := os.Stat(newPath); err == nil {
+		return fmt.Errorf("file already exists: %s", filepath.Base(newPath))
+	}
+
 	err := os.Rename(oldPath, newPath)
 	if err != nil {
 		return err

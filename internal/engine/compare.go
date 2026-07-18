@@ -15,6 +15,7 @@ import (
 
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
+	"vdfusion/internal/neural"
 )
 
 type ComparisonEngine struct{}
@@ -377,11 +378,23 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 }
 
 func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
+	required := cfg.Percent / 100.0
+
+	// Neural mode: use cosine similarity between CLIP embeddings when both records have them.
+	if len(a.NeuralEmbeddings) > 0 && len(b.NeuralEmbeddings) > 0 {
+		score, ok := neural.AverageCosineSimilarity(a.NeuralEmbeddings, b.NeuralEmbeddings)
+		if ok {
+			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring
+			normScore := (score + 1.0) / 2.0
+			return normScore >= required, normScore
+		}
+	}
+
+	// Fallback: pHash Hamming distance
 	frames := min(len(a.PHashV2s), len(b.PHashV2s))
 	if frames == 0 {
 		return false, 0
 	}
-	required := cfg.Percent / 100.0
 	total := 0.0
 	for i := 0; i < frames; i++ {
 		dist := phashHamming(a.PHashV2s[i], b.PHashV2s[i])

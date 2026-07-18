@@ -11,6 +11,7 @@ import (
 
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
+	"vdfusion/internal/neural"
 )
 
 type ProgressReporter interface {
@@ -25,6 +26,7 @@ type Scanner struct {
 	reporter       ProgressReporter
 	compare        *ComparisonEngine
 	resultsManager *ResultsManager
+	neuralClient   *neural.Client // optional; set when neural backend is enabled
 	cancel         context.CancelFunc
 	mu             sync.Mutex
 	running        bool
@@ -46,6 +48,11 @@ func NewScanner(walker *Walker, db *db.Database, reporter ProgressReporter, comp
 		compare:        compare,
 		resultsManager: resultsManager,
 	}
+}
+
+func (s *Scanner) SetNeuralClient(c *neural.Client) {
+	s.neuralClient = c
+	s.walker.SetNeuralClient(c)
 }
 
 func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings) {
@@ -94,6 +101,17 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 		log.Printf("Scanner: Starting comparison phase...")
 		s.BroadcastProgress(0, 0, "comparing", "Loading files...", duration, 0)
 
+		// Neural backend healthcheck: if configured and unreachable, abort comparison.
+		if s.neuralClient != nil {
+			if !s.neuralClient.HealthCheck(scanCtx) {
+				msg := "Neural backend is unreachable. Aborting comparison phase. Check the URL in Settings → Neural Backend."
+				log.Printf("Scanner: %s", msg)
+				s.BroadcastLog("error", msg)
+				s.BroadcastProgress(0, 0, "error: neural backend unreachable", "", duration, 0)
+				return
+			}
+			s.BroadcastLog("info", "Neural backend: connected ✓")
+		}
 		files, err := s.db.GetFilesByPrefixes(paths)
 		if err != nil {
 			log.Printf("Scanner: Failed to load files: %v", err)

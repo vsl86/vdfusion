@@ -27,6 +27,7 @@ import (
 	"vdfusion/internal/db"
 	"vdfusion/internal/engine"
 	"vdfusion/internal/media"
+	"vdfusion/internal/neural"
 	"vdfusion/internal/utils"
 	"vdfusion/internal/version"
 )
@@ -97,6 +98,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/stats", s.handleGetStats)
 		r.Get("/debug", s.handleGetDebugInfo)
 		r.Get("/updates/check", s.handleCheckUpdates)
+		r.Post("/settings/test-neural", s.handleTestNeuralBackend)
 	})
 
 	// Static assets (built frontend)
@@ -714,4 +716,39 @@ func (s *Server) isNewer(current, latest string) bool {
 
 func (s *Server) Start(addr string) error {
 	return http.ListenAndServe(addr, s.Router)
+}
+
+func (s *Server) handleTestNeuralBackend(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if body.URL == "" {
+		s.jsonError(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	client := neural.NewClient(body.URL)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if !client.HealthCheck(ctx) {
+		s.jsonError(w, fmt.Sprintf("backend unreachable at %s", body.URL), http.StatusBadGateway)
+		return
+	}
+
+	info, err := client.Info(ctx)
+	if err != nil {
+		info = map[string]any{"status": "ok"}
+	} else {
+		info["status"] = "ok"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(info)
 }

@@ -13,23 +13,26 @@ import (
 	"strings"
 	"time"
 
+	"vdfusion/internal/neural"
+
 	_ "modernc.org/sqlite"
 )
 
 type FileRecord struct {
-	ID             int64
-	Path           string
-	Size           int64
-	Modified       int64
-	Duration       float64
-	Width          int
-	Height         int
-	PHashV2s       []uint64
-	Codec          string
-	Bitrate        int64
-	FPS            float64
-	Warnings       []string
-	IdentifierHash string
+	ID                int64
+	Path              string
+	Size              int64
+	Modified          int64
+	Duration          float64
+	Width             int
+	Height            int
+	PHashV2s          []uint64
+	Codec             string
+	Bitrate           int64
+	FPS               float64
+	Warnings          []string
+	IdentifierHash    string
+	NeuralEmbeddings  [][]float32 // L2-normalised CLIP ViT-B/32 embeddings, one per frame
 }
 
 func (r FileRecord) GetIdentifierHash() string {
@@ -233,6 +236,24 @@ func (d *Database) withRetry(fn func() error) error {
 }
 
 func (d *Database) UpsertFile(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string) error {
+	return d.upsertFile(path, size, modified, duration, width, height, hashes, codec, bitrate, fps, warnings, nil)
+}
+
+// UpsertFileWithNeural is like UpsertFile but also stores neural embeddings.
+func (d *Database) UpsertFileWithNeural(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, neural []byte) error {
+	return d.upsertFile(path, size, modified, duration, width, height, hashes, codec, bitrate, fps, warnings, neural)
+}
+
+// UpdateNeuralEmbeddings stores neural embeddings for an existing file record without
+// touching any other fields. Used when a scan enriches an already-indexed file.
+func (d *Database) UpdateNeuralEmbeddings(path string, neural []byte) error {
+	return d.withRetry(func() error {
+		_, err := d.conn.Exec("UPDATE files SET neural_v1 = ? WHERE path = ?", neural, path)
+		return err
+	})
+}
+
+func (d *Database) upsertFile(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, neural []byte) error {
 	packed := packHashes(hashes)
 
 	var warningsJSON string
@@ -242,8 +263,8 @@ func (d *Database) UpsertFile(path string, size int64, modified int64, duration 
 	}
 
 	query := `
-	INSERT INTO files (path, size, modified, duration, width, height, phashes, codec, bitrate, fps, warnings, identifier_hash)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, modified, duration, width, height, phashes, codec, bitrate, fps, warnings, identifier_hash, neural_v1)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
 		size = excluded.size,
 		modified = excluded.modified,
@@ -254,20 +275,40 @@ func (d *Database) UpsertFile(path string, size int64, modified int64, duration 
 		codec = excluded.codec,
 		bitrate = excluded.bitrate,
 		fps = excluded.fps,
-		warnings = excluded.warnings;
+		warnings = excluded.warnings,
+		neural_v1 = COALESCE(excluded.neural_v1, neural_v1);
 	`
 	input := fmt.Sprintf("%d_%d", size, modified)
 	hash := sha256.Sum256([]byte(input))
 	hashStr := strings.ToUpper(hex.EncodeToString(hash[:]))
 
 	return d.withRetry(func() error {
-		_, err := d.conn.Exec(query, path, size, modified, duration, width, height, packed, codec, bitrate, fps, warningsJSON, hashStr)
+		_, err := d.conn.Exec(query, path, size, modified, duration, width, height, packed, codec, bitrate, fps, warningsJSON, hashStr, neural)
 		return err
 	})
 }
 
+// scanFileRecord reads one row from a prepared SELECT that includes neural_v1 as the last column.
+func scanFileRecord(scan func(...any) error, unpackNeural func([]byte) [][]float32) (FileRecord, error) {
+	var r FileRecord
+	var packed []byte
+	var warningsJSON string
+	var neuralBlob []byte
+	if err := scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash, &neuralBlob); err != nil {
+		return FileRecord{}, err
+	}
+	r.PHashV2s = unpackHashes(packed)
+	if warningsJSON != "" {
+		json.Unmarshal([]byte(warningsJSON), &r.Warnings)
+	}
+	if len(neuralBlob) > 0 {
+		r.NeuralEmbeddings = unpackNeural(neuralBlob)
+	}
+	return r, nil
+}
+
 func (d *Database) GetAllFiles() ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files")
+	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files")
 	if err != nil {
 		return nil, err
 	}
@@ -275,15 +316,9 @@ func (d *Database) GetAllFiles() ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		var r FileRecord
-		var packed []byte
-		var warningsJSON string
-		if err := rows.Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
+		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		if err != nil {
 			return nil, err
-		}
-		r.PHashV2s = unpackHashes(packed)
-		if warningsJSON != "" {
-			json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 		}
 		records = append(records, r)
 	}
@@ -291,26 +326,19 @@ func (d *Database) GetAllFiles() ([]FileRecord, error) {
 }
 
 func (d *Database) GetFileByPath(path string) (*FileRecord, error) {
-	var r FileRecord
-	var packed []byte
-	var warningsJSON string
-	err := d.conn.QueryRow("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files WHERE path = ?", path).
-		Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash)
+	row := d.conn.QueryRow("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE path = ?", path)
+	r, err := scanFileRecord(row.Scan, neural.UnpackEmbeddings)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	r.PHashV2s = unpackHashes(packed)
-	if warningsJSON != "" {
-		json.Unmarshal([]byte(warningsJSON), &r.Warnings)
-	}
 	return &r, nil
 }
 
 func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files WHERE size = ? AND modified = ?", size, modified)
+	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE size = ? AND modified = ?", size, modified)
 	if err != nil {
 		return nil, err
 	}
@@ -318,15 +346,9 @@ func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error)
 
 	var records []FileRecord
 	for rows.Next() {
-		var r FileRecord
-		var packed []byte
-		var warningsJSON string
-		if err := rows.Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
+		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		if err != nil {
 			return nil, err
-		}
-		r.PHashV2s = unpackHashes(packed)
-		if warningsJSON != "" {
-			json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 		}
 		records = append(records, r)
 	}
@@ -494,7 +516,7 @@ func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
 		placeholders[i] = "?"
 		args[i] = p
 	}
-	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files WHERE path IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE path IN (%s)", strings.Join(placeholders, ","))
 
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
@@ -504,15 +526,9 @@ func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
 
 	var results []FileRecord
 	for rows.Next() {
-		var r FileRecord
-		var phashesBlob []byte
-		var warningsJSON string
-		if err := rows.Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &phashesBlob, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
+		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		if err != nil {
 			return nil, err
-		}
-		r.PHashV2s = unpackHashes(phashesBlob)
-		if warningsJSON != "" {
-			json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 		}
 		results = append(results, r)
 	}
@@ -534,7 +550,7 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 		args = append(args, p+"%")
 	}
 
-	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files WHERE %s", strings.Join(conditions, " OR "))
+	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE %s", strings.Join(conditions, " OR "))
 
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
@@ -544,15 +560,9 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		var r FileRecord
-		var packed []byte
-		var warningsJSON string
-		if err := rows.Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
+		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		if err != nil {
 			return nil, err
-		}
-		r.PHashV2s = unpackHashes(packed)
-		if warningsJSON != "" {
-			json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 		}
 		records = append(records, r)
 	}
@@ -560,7 +570,7 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 }
 
 func (d *Database) GetSuspiciousFiles() ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '') FROM files WHERE warnings != '' AND warnings != '[]'")
+	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE warnings != '' AND warnings != '[]'")
 	if err != nil {
 		return nil, err
 	}
@@ -568,15 +578,9 @@ func (d *Database) GetSuspiciousFiles() ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		var r FileRecord
-		var packed []byte
-		var warningsJSON string
-		if err := rows.Scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
+		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		if err != nil {
 			return nil, err
-		}
-		r.PHashV2s = unpackHashes(packed)
-		if warningsJSON != "" {
-			json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 		}
 		records = append(records, r)
 	}
