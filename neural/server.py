@@ -48,20 +48,28 @@ MAX_BATCH = int(os.environ.get("MAX_BATCH", "32"))
 
 def _build_session(model_path: Path) -> ort.InferenceSession:
     """Create an ORT session, preferring CoreML on Apple Silicon."""
-    providers: list[str] = []
+    providers: list = []
 
     available = ort.get_available_providers()
+    print(f"[neural] Available providers: {available}")
     if "CoreMLExecutionProvider" in available:
         providers.append("CoreMLExecutionProvider")
     providers.append("CPUExecutionProvider")
 
     opts = ort.SessionOptions()
-    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # Disable advanced graph optimizations that caused issues before
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
     opts.inter_op_num_threads = int(os.environ.get("ORT_THREADS", "4"))
 
-    session = ort.InferenceSession(str(model_path), sess_options=opts, providers=providers)
+    try:
+        session = ort.InferenceSession(str(model_path), sess_options=opts, providers=providers)
+    except Exception as e:
+        print(f"[neural] Failed initializing with preferred providers: {e}")
+        print("[neural] Falling back to CPU only")
+        session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
+    
     active = session.get_providers()
-    print(f"[neural] Loaded {model_path.name} | providers: {active}")
+    print(f"[neural] Loaded {model_path.name} | active providers: {active}")
     return session
 
 
@@ -86,11 +94,7 @@ def get_session() -> ort.InferenceSession:
 # ---------------------------------------------------------------------------
 
 def preprocess(image_bytes: bytes) -> np.ndarray:
-    """Load and preprocess a single image into a (3, 224, 224) float32 array.
-
-    The batch is cast to float16 before inference because vision_model_fp16.onnx
-    expects float16 inputs. Pre-processing stays in float32 for numerical precision.
-    """
+    """Load and preprocess a single image into a (3, 224, 224) float32 array."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((CLIP_SIZE, CLIP_SIZE), Image.BICUBIC)
     arr = np.array(img, dtype=np.float32) / 255.0          # (H, W, 3)
@@ -115,8 +119,8 @@ async def _warmup() -> None:
     """Pre-load the model so the first real request isn't slow."""
     try:
         sess = get_session()
-        # Warmup with a blank image — fp16 model expects float16 input
-        dummy = np.zeros((1, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float16)
+        # Warmup with a blank image — model expects float32 input
+        dummy = np.zeros((1, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
         input_name = sess.get_inputs()[0].name
         sess.run(None, {input_name: dummy})
         print("[neural] Warmup complete.")
@@ -177,8 +181,6 @@ async def embed(
         batch.append(arr)
 
     batch_arr = np.stack(batch, axis=0)  # (N, 3, 224, 224) float32
-    # vision_model_fp16.onnx expects float16 inputs
-    batch_arr = batch_arr.astype(np.float16)
 
     try:
         output = sess.run([output_name], {input_name: batch_arr})[0]  # (N, 512)

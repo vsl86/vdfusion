@@ -37,7 +37,8 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]" \
     onnxruntime \
     Pillow \
-    numpy
+    numpy \
+    python-multipart
 
 # ── Application ───────────────────────────────────────────────────────────────
 COPY server.py         ./server.py
