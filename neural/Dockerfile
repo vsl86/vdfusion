@@ -23,25 +23,25 @@ WORKDIR /app
 
 # System deps (for Pillow & urllib)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python deps ───────────────────────────────────────────────────────────────
-COPY neural/requirements.txt .
+COPY requirements.txt .
 
 # Always install the generic onnxruntime inside Linux containers
 # (onnxruntime-silicon is macOS-arm64 only; requirements.txt handles the guard,
 #  but pip platform markers can't cross-compile so we force the right one here)
 RUN pip install --no-cache-dir \
-        fastapi \
-        "uvicorn[standard]" \
-        onnxruntime \
-        Pillow \
-        numpy
+    fastapi \
+    "uvicorn[standard]" \
+    onnxruntime \
+    Pillow \
+    numpy
 
 # ── Application ───────────────────────────────────────────────────────────────
-COPY neural/server.py         ./server.py
-COPY neural/download_model.py ./download_model.py
+COPY server.py         ./server.py
+COPY download_model.py ./download_model.py
 
 # Model volume – mount here or let entrypoint download on first run
 VOLUME ["/models"]
@@ -57,5 +57,5 @@ ENTRYPOINT ["sh", "-c", "python download_model.py --output-dir /models && exec u
 EXPOSE 8765
 
 LABEL org.opencontainers.image.title="vdfusion-neural" \
-      org.opencontainers.image.description="CLIP ViT-B/32 frame embedding backend for vdfusion" \
-      org.opencontainers.image.source="https://github.com/vsevolod/vdfusion"
+    org.opencontainers.image.description="CLIP ViT-B/32 frame embedding backend for vdfusion" \
+    org.opencontainers.image.source="https://github.com/vsevolod/vdfusion"
