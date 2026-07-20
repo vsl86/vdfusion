@@ -26,7 +26,6 @@ jobs:
   docker-app:
     name: Build & Push App Docker
     runs-on: ${{ vars.RUNNER_LINUX && fromJSON(vars.RUNNER_LINUX) || 'ubuntu-latest' }}
-    needs: [test]
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
@@ -85,7 +84,6 @@ jobs:
   docker-neural:
     name: Build & Push Neural Docker
     runs-on: ${{ vars.RUNNER_LINUX && fromJSON(vars.RUNNER_LINUX) || 'ubuntu-latest' }}
-    needs: [test]
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
@@ -137,7 +135,6 @@ jobs:
   build:
     name: Build All Artifacts
     runs-on: ${{ vars.RUNNER_MACOS && fromJSON(vars.RUNNER_MACOS) || 'macos-15' }}
-    needs: [test]
     if: github.event_name != 'pull_request'
     permissions:
       contents: read
