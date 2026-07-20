@@ -1,0 +1,43 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Verify
+    runs-on: ${{ vars.RUNNER_MACOS && fromJSON(vars.RUNNER_MACOS) || 'macos-15' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install System Dependencies
+        run: |
+          if command -v brew >/dev/null 2>&1; then
+            for pkg in pkg-config ffmpeg; do
+              brew list $pkg >/dev/null 2>&1 || brew install $pkg
+            done
+          elif command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y pkg-config ffmpeg
+          fi
+
+      - name: Install Wails
+        run: command -v wails >/dev/null 2>&1 || go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Run Go Tests
+        run: go test -v ./...
