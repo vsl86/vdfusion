@@ -27,6 +27,7 @@ jobs:
   test:
     name: Test & Verify
     runs-on: ${{ vars.RUNNER_MACOS && fromJSON(vars.RUNNER_MACOS) || 'macos-15' }}
+    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
