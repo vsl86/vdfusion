@@ -51,6 +51,7 @@ func NewScanner(walker *Walker, db *db.Database, reporter ProgressReporter, comp
 }
 
 func (s *Scanner) SetNeuralClient(c *neural.Client) {
+	log.Printf("Scanner.SetNeuralClient called: c=%v (neural client)", c)
 	s.neuralClient = c
 	s.walker.SetNeuralClient(c)
 }

@@ -89,7 +89,9 @@ func NewApp(database *db.Database, sm *config.SettingsManager) *App {
 
 	// Wire neural client if enabled in settings
 	cfg := sm.Get()
+	log.Printf("NewApp: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", cfg.NeuralBackendEnabled, cfg.NeuralBackendURL)
 	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		log.Printf("NewApp: creating neural client for %q", cfg.NeuralBackendURL)
 		client := neural.NewClient(cfg.NeuralBackendURL)
 		scanner.SetNeuralClient(client)
 	}
@@ -149,10 +151,13 @@ func (a *App) SaveSettings(cfg config.Settings) error {
 		return err
 	}
 	// Re-wire neural client whenever settings change
+	log.Printf("SaveSettings: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", cfg.NeuralBackendEnabled, cfg.NeuralBackendURL)
 	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		log.Printf("SaveSettings: creating neural client for %q", cfg.NeuralBackendURL)
 		client := neural.NewClient(cfg.NeuralBackendURL)
 		a.scanner.SetNeuralClient(client)
 	} else {
+		log.Printf("SaveSettings: disabling neural client")
 		a.scanner.SetNeuralClient(nil)
 	}
 	return nil
@@ -485,6 +490,13 @@ func (a *App) ImportDB() error {
 
 	scanner := engine.NewScanner(walker, newDB, a.reporter, compare, resultsManager)
 	walker.SetReporter(scanner)
+
+	// Re-wire neural client after import
+	cfg := a.settings.Get()
+	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		client := neural.NewClient(cfg.NeuralBackendURL)
+		scanner.SetNeuralClient(client)
+	}
 
 	a.db = newDB
 	a.compare = compare

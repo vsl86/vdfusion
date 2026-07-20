@@ -34,6 +34,7 @@ func (w *Walker) SetReporter(reporter ProgressReporter) {
 }
 
 func (w *Walker) SetNeuralClient(c *neural.Client) {
+	log.Printf("Walker.SetNeuralClient called: c=%v", c)
 	w.neuralClient = c
 }
 
@@ -41,6 +42,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 	startTime := time.Now()
 
 	w.report(0, 0, "discovery", "", startTime)
+	log.Printf("Walker: starting index with neural client: %v", w.neuralClient != nil)
 
 	var allFiles []string
 	var mu sync.Mutex
@@ -198,86 +200,78 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 				existing, _ := w.db.GetFileByPath(path)
 				modTime := fileInfo.ModTime().Unix()
 				needsNeural := existing != nil && w.neuralClient != nil && len(existing.NeuralEmbeddings) == 0
-				shouldSkip := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime && !needsNeural
-				if shouldSkip && cfg.RecheckSuspicious && len(existing.Warnings) > 0 {
-					log.Printf("Walker: Forcing re-probe of suspicious file: %s", path)
-					shouldSkip = false
-				}
+				isUnmodified := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime
 
-				if shouldSkip {
-					needsNeural := w.neuralClient != nil && len(existing.NeuralEmbeddings) == 0
-					if len(existing.PHashV2s) >= thumbCount && !needsNeural {
-						if existing.Codec != "" && existing.Width > 0 && existing.Height > 0 {
-							newProcessed := atomic.AddInt64(&processedCount, 1)
-							w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
-							continue
-						}
-						// Check context before metadata enrichment
-						if ctx.Err() != nil {
-							return
-						}
-						if cfg.DebugLogging {
-							log.Printf("Walker: Enriching metadata for %s", path)
-						}
-						meta, err := media.ProbeNative(path)
-						if err != nil {
-							meta, _ = media.Probe(ctx, path)
-						}
-						if meta != nil && meta.Codec != "" {
-							if needsNeural {
-								// Extract thumbnails and compute neural embeddings for existing file
-								var jpegFrames [][]byte
-								for i := 0; i < thumbCount; i++ {
-									timestamp := media.GetStableTimestamp(i, meta.Duration)
-									jpeg, jerr := media.ExtractThumbnailNative(ctx, path, timestamp, 224, 0)
-									if jerr != nil {
-										jpeg, _ = media.ExtractThumbnail(ctx, path, timestamp, 224, 224)
-									}
-									if jpeg != nil {
-										jpegFrames = append(jpegFrames, jpeg)
-									}
-								}
-								if len(jpegFrames) > 0 {
-									embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
-									if nerr != nil {
-										log.Printf("Walker: neural embed failed for %s: %v", path, nerr)
-									} else {
-										neuralBlob := neural.PackEmbeddings(embeddings)
-										_ = w.db.UpdateNeuralEmbeddings(path, neuralBlob)
-									}
-								}
-							}
-							err = w.db.UpsertFile(path, existing.Size, existing.Modified, meta.Duration, meta.Width, meta.Height, existing.PHashV2s, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings)
-							if err == nil {
-								dirtyMu.Lock()
-								dirtyPaths[path] = true
-								dirtyMu.Unlock()
+				if isUnmodified && cfg.RecheckSuspicious && len(existing.Warnings) > 0 {
+					log.Printf("Walker: Forcing re-probe of suspicious file: %s", path)
+					isUnmodified = false
+				}
+				if isUnmodified {
+					if !needsNeural {
+						if len(existing.PHashV2s) >= thumbCount {
+							if existing.Codec != "" && existing.Width > 0 && existing.Height > 0 {
 								newProcessed := atomic.AddInt64(&processedCount, 1)
 								w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
 								continue
 							}
+							
+							// Just update metadata if missing
+							log.Printf("Walker: Updating missing metadata for %s", path)
+							meta, err := media.ProbeNative(path)
+							if err != nil {
+								meta, _ = media.Probe(ctx, path)
+							}
+							if meta != nil && meta.Codec != "" {
+								err = w.db.UpsertFile(path, existing.Size, existing.Modified, meta.Duration, meta.Width, meta.Height, existing.PHashV2s, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings)
+								if err == nil {
+									dirtyMu.Lock()
+									dirtyPaths[path] = true
+									dirtyMu.Unlock()
+									newProcessed := atomic.AddInt64(&processedCount, 1)
+									w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
+									continue
+								}
+							}
+						} else {
+							// Upgrade hashes
+							log.Printf("Walker: Upgrading hashes for %s (%d -> %d)", path, len(existing.PHashV2s), thumbCount)
+							meta, err := media.ProbeNative(path)
+							if err != nil {
+								meta, _ = media.Probe(ctx, path)
+							}
+							if meta != nil {
+								hashes := make([]uint64, len(existing.PHashV2s))
+								copy(hashes, existing.PHashV2s)
+								for i := len(existing.PHashV2s); i < thumbCount; i++ {
+									timestamp := media.GetStableTimestamp(i, meta.Duration)
+									gray, err := media.ExtractGray32x32Native(ctx, path, timestamp)
+									if err != nil {
+										gray, err = media.ExtractGray32x32(ctx, path, timestamp)
+									}
+									if err == nil {
+										hashes = append(hashes, phash.ComputeV2(gray))
+									}
+								}
+								err = w.db.UpsertFile(path, existing.Size, existing.Modified, meta.Duration, meta.Width, meta.Height, hashes, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings)
+								if err == nil {
+									dirtyMu.Lock()
+									dirtyPaths[path] = true
+									dirtyMu.Unlock()
+									newProcessed := atomic.AddInt64(&processedCount, 1)
+									w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
+									continue
+								}
+							}
 						}
 					} else {
-						log.Printf("Walker: Upgrading hashes for %s (%d -> %d)", path, len(existing.PHashV2s), thumbCount)
+						// isUnmodified && needsNeural
+						log.Printf("Walker: Enriching neural embeddings for existing file %s", path)
 						meta, err := media.ProbeNative(path)
 						if err != nil {
 							meta, _ = media.Probe(ctx, path)
 						}
-						if meta == nil {
-							atomic.AddInt64(&processedCount, 1)
-							continue
-						}
-
-						// Check context before frame extraction loop
-						if ctx.Err() != nil {
-							return
-						}
-						hashes := make([]uint64, len(existing.PHashV2s))
-						copy(hashes, existing.PHashV2s)
-
-						var jpegFrames [][]byte // For neural embeddings
-						if needsNeural {
-							// Extract all thumbnails if we need neural embeddings
+						if meta != nil {
+							var jpegFrames [][]byte
 							for i := 0; i < thumbCount; i++ {
 								timestamp := media.GetStableTimestamp(i, meta.Duration)
 								jpeg, jerr := media.ExtractThumbnailNative(ctx, path, timestamp, 224, 0)
@@ -288,49 +282,22 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 									jpegFrames = append(jpegFrames, jpeg)
 								}
 							}
-						}
-
-						for i := len(existing.PHashV2s); i < thumbCount; i++ {
-							timestamp := media.GetStableTimestamp(i, meta.Duration)
-							gray, err := media.ExtractGray32x32Native(ctx, path, timestamp)
-							if err != nil {
-								gray, err = media.ExtractGray32x32(ctx, path, timestamp)
-							}
-							if err == nil {
-								hashes = append(hashes, phash.ComputeV2(gray))
-							} else {
-								log.Printf("Walker: Failed to extract extra hash %d for %s", i, path)
+							if len(jpegFrames) > 0 {
+								embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
+								if nerr == nil {
+									neuralBlob := neural.PackEmbeddings(embeddings)
+									_ = w.db.UpdateNeuralEmbeddings(path, neuralBlob)
+								}
 							}
 						}
-
-						var neuralBlob []byte
-						if needsNeural && len(jpegFrames) > 0 {
-							embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
-							if nerr != nil {
-								log.Printf("Walker: neural embed failed for %s: %v", path, nerr)
-							} else {
-								neuralBlob = neural.PackEmbeddings(embeddings)
-							}
-						}
-
-						if len(neuralBlob) > 0 {
-							err = w.db.UpsertFileWithNeural(path, existing.Size, existing.Modified, meta.Duration, meta.Width, meta.Height, hashes, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings, neuralBlob)
-						} else {
-							err = w.db.UpsertFile(path, existing.Size, existing.Modified, meta.Duration, meta.Width, meta.Height, hashes, meta.Codec, meta.Bitrate, meta.FPS, meta.Warnings)
-						}
-
-						if err == nil {
-							dirtyMu.Lock()
-							dirtyPaths[path] = true
-							dirtyMu.Unlock()
-							newProcessed := atomic.AddInt64(&processedCount, 1)
-							w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
-							continue
-						}
+						newProcessed := atomic.AddInt64(&processedCount, 1)
+						w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
+						continue
 					}
 				}
 
-				// If we get here: either it's a new file, needsNeural, hashes need upgrading, or suspicious
+				// If we get here: either it's a new file, or suspicious
+				log.Printf("Walker: processing file %s, needsNeural=%v, neuralClient=%v", path, needsNeural, w.neuralClient != nil)
 
 				peers, _ := w.db.GetFilesByContent(fileInfo.Size(), modTime)
 				var reusablehashes []uint64
@@ -449,7 +416,9 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 
 				// Attempt neural embedding for new/changed files
 				var neuralBlob []byte
+				log.Printf("Walker: about to check neural for %s: w.neuralClient=%v, len(jpegFrames)=%d", path, w.neuralClient != nil, len(jpegFrames))
 				if w.neuralClient != nil && len(jpegFrames) > 0 {
+					log.Printf("Walker: calling neuralClient.Embed for %s", path)
 					embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
 					if nerr != nil {
 						log.Printf("Walker: neural embed failed for %s: %v", path, nerr)

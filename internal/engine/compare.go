@@ -344,7 +344,8 @@ func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cf
 	bestIdx := 0
 	for i, idx := range cluster {
 		r := records[idx]
-		gID.WriteString(r.Path + "|")
+		gID.WriteString(r.Path)
+		gID.WriteString("|")
 		fileInfos = append(fileInfos, FileInfo{
 			Path: r.Path, Size: r.Size, Duration: r.Duration, Width: r.Width, Height: r.Height,
 			IdentifierHash: r.GetIdentifierHash(), Codec: r.Codec, Bitrate: r.Bitrate, FPS: r.FPS, Similarity: 100.0,

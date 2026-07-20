@@ -51,8 +51,8 @@ func NewSettingsManager(filePath string) *SettingsManager {
 		filePath: filePath,
 		settings: Settings{
 			FilterByDuration:          false,
-			Percent:                   96.0,
-			PercentDurationDifference: 20.0,
+			Percent:                   96,
+			PercentDurationDifference: 20,
 			Thumbnails:                4,
 			Concurrency:               4,
 			AutoFetchThumbnails:       true,
@@ -61,6 +61,7 @@ func NewSettingsManager(filePath string) *SettingsManager {
 			ShowSimilarity:            true,
 			ShowThumbnails:            true,
 			CleanupOrphans:            false,
+			NeuralBackendURL:          "http://127.0.0.1:8765",
 		},
 	}
 	sm.Load()
@@ -105,8 +106,8 @@ func (sm *SettingsManager) Update(s Settings) error {
 func (sm *SettingsManager) Reset() error {
 	defaults := Settings{
 		FilterByDuration:          false,
-		Percent:                   96.0,
-		PercentDurationDifference: 20.0,
+		Percent:                   96,
+		PercentDurationDifference: 20,
 		Thumbnails:                13,
 		Concurrency:               4,
 		AutoFetchThumbnails:       true,
@@ -115,6 +116,7 @@ func (sm *SettingsManager) Reset() error {
 		ShowSimilarity:            true,
 		ShowThumbnails:            true,
 		CleanupOrphans:            false,
+		NeuralBackendURL:          "http://127.0.0.1:8765",
 	}
 	return sm.Update(defaults)
 }

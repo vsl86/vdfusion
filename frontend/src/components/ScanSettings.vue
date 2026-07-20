@@ -383,7 +383,7 @@ const settings = ref({
   maximum_file_size: 0,
   cleanup_orphans: false,
   neural_backend_enabled: false,
-  neural_backend_url: ''
+  neural_backend_url: 'http://127.0.0.1:8765'
 })
 
 const baseSettings = ref(null)
