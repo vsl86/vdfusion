@@ -197,7 +197,8 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 
 				existing, _ := w.db.GetFileByPath(path)
 				modTime := fileInfo.ModTime().Unix()
-				shouldSkip := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime
+				needsNeural := existing != nil && w.neuralClient != nil && len(existing.NeuralEmbeddings) == 0
+				shouldSkip := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime && !needsNeural
 				if shouldSkip && cfg.RecheckSuspicious && len(existing.Warnings) > 0 {
 					log.Printf("Walker: Forcing re-probe of suspicious file: %s", path)
 					shouldSkip = false
@@ -328,6 +329,8 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 						}
 					}
 				}
+
+				// If we get here: either it's a new file, needsNeural, hashes need upgrading, or suspicious
 
 				peers, _ := w.db.GetFilesByContent(fileInfo.Size(), modTime)
 				var reusablehashes []uint64
