@@ -281,6 +281,17 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Re-wire neural client when settings change
+	log.Printf("handlePutSettings: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", newSettings.NeuralBackendEnabled, newSettings.NeuralBackendURL)
+	if newSettings.NeuralBackendEnabled && newSettings.NeuralBackendURL != "" {
+		log.Printf("handlePutSettings: creating neural client for %q", newSettings.NeuralBackendURL)
+		client := neural.NewClient(newSettings.NeuralBackendURL)
+		s.scanner.SetNeuralClient(client)
+	} else {
+		log.Printf("handlePutSettings: disabling neural client")
+		s.scanner.SetNeuralClient(nil)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(s.settings.Get())

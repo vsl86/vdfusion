@@ -18,6 +18,7 @@ import (
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
 	"vdfusion/internal/engine"
+	"vdfusion/internal/neural"
 	"vdfusion/internal/syslog"
 )
 
@@ -72,6 +73,15 @@ func runServer(database *db.Database, settingsManager *config.SettingsManager) {
 
 	scanner := engine.NewScanner(walker, database, hub, compare, resultsManager)
 	walker.SetReporter(scanner)
+
+	// Wire neural client if enabled in settings
+	cfg := settingsManager.Get()
+	log.Printf("runServer: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", cfg.NeuralBackendEnabled, cfg.NeuralBackendURL)
+	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
+		log.Printf("runServer: creating neural client for %q", cfg.NeuralBackendURL)
+		client := neural.NewClient(cfg.NeuralBackendURL)
+		scanner.SetNeuralClient(client)
+	}
 
 	server := api.NewServer(database, hub, scanner, resultsManager, settingsManager, assets)
 
