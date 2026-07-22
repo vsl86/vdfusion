@@ -121,3 +121,152 @@ func (c *Client) Embed(ctx context.Context, images [][]byte) ([][]float32, error
 	}
 	return result.Embeddings, nil
 }
+
+// batchRequest represents an internal request to the BatchEmbedder.
+type batchRequest struct {
+	images     [][]byte
+	resultChan chan [][]float32
+	errChan    chan error
+}
+
+// BatchEmbedder collects multiple small image batches into larger chunks 
+// to maximize throughput on the neural backend.
+type BatchEmbedder struct {
+	client      *Client
+	requestChan chan batchRequest
+}
+
+// NewBatchEmbedder creates a new BatchEmbedder using the provided client.
+func NewBatchEmbedder(client *Client) *BatchEmbedder {
+	return &BatchEmbedder{
+		client:      client,
+		requestChan: make(chan batchRequest),
+	}
+}
+
+// Start begins the background processing loop for the BatchEmbedder.
+func (be *BatchEmbedder) Start(ctx context.Context) {
+	go be.run(ctx)
+}
+
+// Embed submits a batch of images to the BatchEmbedder and waits for results.
+func (be *BatchEmbedder) Embed(ctx context.Context, images [][]byte) ([][]float32, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+
+	resChan := make(chan [][]float32, 1)
+	errChan := make(chan error, 1)
+
+	req := batchRequest{
+		images:     images,
+		resultChan: resChan,
+		errChan:    errChan,
+	}
+
+	// Submit to the aggregator
+	select {
+	case be.requestChan <- req:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// Wait for result or context cancellation
+	select {
+	case res := <-resChan:
+		return res, nil
+	case err := <-errChan:
+		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (be *BatchEmbedder) run(ctx context.Context) {
+	var currentBatch [][]byte
+	var batchRequests []batchRequest
+
+	// Linger timeout to prevent holding requests too long when throughput is low.
+	const linger = 20 * time.Millisecond
+	timer := time.NewTimer(linger)
+	defer timer.Stop()
+
+	for {
+		select {
+		case req, ok := <-be.requestChan:
+			if !ok {
+				// Channel closed, process remaining and exit
+				be.process(ctx, currentBatch, batchRequests)
+				return
+			}
+
+			currentBatch = append(currentBatch, req.images...)
+			batchRequests = append(batchRequests, req)
+
+			// If we hit the max batch size (32), process immediately.
+			if len(currentBatch) >= 32 {
+				be.process(ctx, currentBatch, batchRequests)
+				// Reset timer
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(linger)
+			}
+
+		case <-timer.C:
+			// Linger timeout reached, process current collection.
+			if len(currentBatch) > 0 {
+				be.process(ctx, currentBatch, batchRequests)
+			}
+			timer.Reset(linger)
+
+		case <-ctx.Done():
+			if len(currentBatch) > 0 {
+				be.process(ctx, currentBatch, batchRequests)
+			}
+			return
+		}
+	}
+}
+
+func (be *BatchEmbedder) process(ctx context.Context, currentBatch [][]byte, batchRequests []batchRequest) {
+	if len(currentBatch) == 0 {
+		return
+	}
+
+	// Perform the actual batch inference via the client.
+	allEmbeddings, err := be.client.Embed(ctx, currentBatch)
+
+	// If an error occurs, distribute it to all requests in this batch.
+	if err != nil {
+		for _, req := range batchRequests {
+			req.errChan <- err
+		}
+		// Clear state for next batch.
+		currentBatch = nil
+		batchRequests = nil
+		return
+	}
+
+	// Distribute the flat list of embeddings back to the original requests.
+	idx := 0
+	for _, req := range batchRequests {
+		numInReq := len(req.images)
+		if numInReq == 0 {
+			continue
+		}
+
+		// Slice the results for this specific request.
+		res := make([][]float32, numInReq)
+		copy(res, allEmbeddings[idx:idx+numInReq])
+		req.resultChan <- res
+		idx += numInReq
+	}
+
+	// Reset state for next batch.
+	currentBatch = nil
+	batchRequests = nil
+}

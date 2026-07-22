@@ -18,15 +18,26 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Annotated
+
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 import onnxruntime as ort
 from PIL import Image
 
+import sys
+
 try:
     import coremltools as ct
-    COREML_AVAILABLE = True
+    # CoreML is only available on macOS
+    if sys.platform != "darwin":
+        COREML_AVAILABLE = False
+    else:
+        COREML_AVAILABLE = True
 except ImportError:
     COREML_AVAILABLE = False
 
@@ -37,14 +48,87 @@ except ImportError:
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/models"))
 VISUAL_MODEL_ONNX = MODEL_DIR / "clip-vit-b32-visual_fp16.onnx"
 VISUAL_MODEL_COREML = MODEL_DIR / "clip-vit-b32-visual_fp16.mlpackage"
+VISUAL_MODEL_MLMODELC = MODEL_DIR / "clip-vit-b32-visual_fp16.mlmodelc"
 
-# Prefer MLProgram for ANE when available, fall back to ONNX
-if VISUAL_MODEL_COREML.exists() and COREML_AVAILABLE:
-    VISUAL_MODEL = VISUAL_MODEL_COREML
-    USE_COREML = True
+import psutil
+
+# First, check env vars, then apply defaults based on system memory
+mem = psutil.virtual_memory()
+
+# Check if env var is set; if not, set defaults based on system memory
+compiled_batch_size_env = os.environ.get("COMPILED_BATCH_SIZE")
+max_batch_env = os.environ.get("MAX_BATCH")
+preprocess_workers_env = os.environ.get("PREPROCESS_WORKERS")
+force_onnx_env = os.environ.get("FORCE_ONNX")
+
+# Auto-enable FORCE_ONNX if CoreML is not available, or on low-memory systems
+if not COREML_AVAILABLE:
+    FORCE_ONNX = True
+    print(f"[neural] CoreML not available, auto-enabling FORCE_ONNX")
+elif force_onnx_env is None and mem.total < 16 * 1024**3:
+    FORCE_ONNX = True
+    print(f"[neural] Low memory system detected (<16GB), auto-enabling FORCE_ONNX to avoid segfaults")
 else:
-    VISUAL_MODEL = VISUAL_MODEL_ONNX
+    FORCE_ONNX = force_onnx_env == "1"
+
+if compiled_batch_size_env is not None:
+    COMPILED_BATCH_SIZE = int(compiled_batch_size_env)
+else:
+    if mem.total < 16 * 1024**3:
+        COMPILED_BATCH_SIZE = 24
+    elif mem.total < 32 * 1024**3:
+        COMPILED_BATCH_SIZE = 24
+    else:
+        COMPILED_BATCH_SIZE = 32
+
+if max_batch_env is not None:
+    MAX_BATCH = int(max_batch_env)
+else:
+    if mem.total < 16 * 1024**3:
+        MAX_BATCH = 24
+    elif mem.total < 32 * 1024**3:
+        MAX_BATCH = 24
+    else:
+        MAX_BATCH = 32
+
+if preprocess_workers_env is not None:
+    PREPROCESS_WORKERS = int(preprocess_workers_env)
+else:
+    if mem.total < 16 * 1024**3:
+        PREPROCESS_WORKERS = 1
+    elif mem.total < 32 * 1024**3:
+        PREPROCESS_WORKERS = 3
+    else:
+        PREPROCESS_WORKERS = 4
+
+print(f"[neural] System memory: {mem.total / (1024**3):.1f} GB, using MAX_BATCH={MAX_BATCH}, PREPROCESS_WORKERS={PREPROCESS_WORKERS}, COMPILED_BATCH_SIZE={COMPILED_BATCH_SIZE}")
+
+if FORCE_ONNX:
     USE_COREML = False
+    VISUAL_MODEL = VISUAL_MODEL_ONNX
+else:
+    # Check for batch size-specific MLModel package first (e.g., clip-vit-b32-visual_fp16_bs16.mlpackage)
+    batch_specific_mlpackage = MODEL_DIR / f"clip-vit-b32-visual_fp16_bs{COMPILED_BATCH_SIZE}.mlpackage"
+    batch_specific_mlmodelc = MODEL_DIR / f"clip-vit-b32-visual_fp16_bs{COMPILED_BATCH_SIZE}.mlmodelc"
+    if batch_specific_mlpackage.exists() and COREML_AVAILABLE:
+        VISUAL_MODEL = batch_specific_mlpackage
+        USE_COREML = True
+        print(f"[neural] Found batch-specific MLModel package: {batch_specific_mlpackage}")
+    elif batch_specific_mlmodelc.exists() and COREML_AVAILABLE:
+        VISUAL_MODEL = batch_specific_mlmodelc
+        USE_COREML = True
+        print(f"[neural] Found batch-specific MLModelC: {batch_specific_mlmodelc}")
+    elif VISUAL_MODEL_COREML.exists() and COREML_AVAILABLE:
+        VISUAL_MODEL = VISUAL_MODEL_COREML
+        USE_COREML = True
+    elif VISUAL_MODEL_MLMODELC.exists() and COREML_AVAILABLE:
+        VISUAL_MODEL = VISUAL_MODEL_MLMODELC
+        USE_COREML = True
+    else:
+        VISUAL_MODEL = VISUAL_MODEL_ONNX
+        USE_COREML = False
+
+print(f"[neural] Forced ONNX: {FORCE_ONNX}, Using CoreML: {USE_COREML}")
 
 # CLIP ViT-B/32 normalisation params
 CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
@@ -55,78 +139,53 @@ EMBEDDING_DIM = 512
 MODEL_NAME = "clip-vit-b32"
 VERSION = "1.0.0"
 
-MAX_BATCH = int(os.environ.get("MAX_BATCH", "32"))
-
-# Parallel preprocessing with thread pool
-_preprocess_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="preprocess")
+# Parallel preprocessing with thread pool & thread safety lock for CoreML inference
+_preprocess_executor = ThreadPoolExecutor(max_workers=PREPROCESS_WORKERS, thread_name_prefix="preprocess")
+_inference_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# ONNX session bootstrap
+# ONNX / CoreML session bootstrap
 # ---------------------------------------------------------------------------
 
 def _build_session(model_path: Path) -> object:
-    """Create an inference session, preferring CoreML MLProgram on Apple Silicon."""
+    """Create an inference session, preferring CoreML MLProgram/MLModelC via dedicated worker process."""
     
     if USE_COREML:
-        print(f"[neural] Loading CoreML MLProgram model for ANE optimization…")
+        print(f"[neural] Spawning CoreML worker process ({model_path.name}) for ANE acceleration…")
         try:
-            mlmodel = ct.models.MLModel(str(model_path), compute_units=ct.ComputeUnit.CPU_AND_NE)
-            print(f"[neural] Loaded {model_path.name} (CoreML MLProgram) | Compute units: CPU_AND_NE")
-            
-            # Get input/output names from model spec
-            try:
-                spec = mlmodel.get_spec()
-                # MLProgram models have descriptions with input/output info
-                if hasattr(spec, 'description') and spec.description:
-                    mlmodel._input_names = [inp.name for inp in spec.description.input]
-                    mlmodel._output_names = [out.name for out in spec.description.output]
-                    print(f"[neural] Inputs: {mlmodel._input_names}, Outputs: {mlmodel._output_names}")
-                else:
-                    print(f"[neural] Warning: Could not extract input/output names from spec")
-                    mlmodel._input_names = []
-                    mlmodel._output_names = []
-            except Exception as e:
-                print(f"[neural] Could not extract I/O names: {e}")
-                mlmodel._input_names = []
-                mlmodel._output_names = []
-            
-            return mlmodel
+            from coreml_worker import CoreMLProcessBridge
+            # Allow user to override compute units via COREML_COMPUTE_UNITS env var
+            # Valid values: 0=CPU_ONLY, 1=CPU_AND_GPU, 2=CPU_AND_NE, 3=ALL
+            compute_units_env = os.environ.get("COREML_COMPUTE_UNITS")
+            compute_units = int(compute_units_env) if compute_units_env is not None else None
+            bridge = CoreMLProcessBridge(model_path, compute_units=compute_units)
+            print(f"[neural] Loaded {model_path.name} via CoreML worker process!")
+            return bridge
         except Exception as e:
-            print(f"[neural] Failed to load CoreML model: {e}")
-            print("[neural] Falling back to ONNX Runtime")
-            model_path = VISUAL_MODEL_ONNX  # Use ONNX file for fallback
-    
-    # ONNX Runtime with CoreML provider
-    print(f"[neural] Loading ONNX model with CoreML provider…")
+            print(f"[neural] CoreML worker process failed ({e}). Falling back to ONNX Runtime…")
+            model_path = VISUAL_MODEL_ONNX
+            
+    # ONNX Runtime fallback
+    print(f"[neural] Loading ONNX model ({model_path.name}) with CoreML provider…")
     
     available = ort.get_available_providers()
     print(f"[neural] Available providers: {available}")
     
     opts = ort.SessionOptions()
-    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     opts.inter_op_num_threads = int(os.environ.get("ORT_THREADS", "4"))
-
-    # Prepare CoreML provider options for ANE optimization
-    cache_dir = MODEL_DIR / ".ort_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
 
     providers: list = []
     if "CoreMLExecutionProvider" in available:
-        coreml_options = {
-            "MLComputeUnits": "CPUAndNeuralEngine",  # Exclude GPU, use ANE only
-            "ModelFormat": "MLProgram",  # Modern format, better for transformers
-            "RequireStaticInputShapes": "1",  # Enable ANE compilation with static shapes
-            "ModelCacheDirectory": str(cache_dir),  # Cache compiled models
-        }
-        providers.append(("CoreMLExecutionProvider", coreml_options))
-    providers.append(("CPUExecutionProvider", {}))
+        providers.append("CoreMLExecutionProvider")
+    providers.append("CPUExecutionProvider")
 
     try:
         session = ort.InferenceSession(str(model_path), sess_options=opts, providers=providers)
     except Exception as e:
         print(f"[neural] Failed initializing with preferred providers: {e}")
         print("[neural] Falling back to CPU only")
-        session = ort.InferenceSession(str(model_path), sess_options=opts, providers=[("CPUExecutionProvider", {})])
+        session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
     
     active = session.get_providers()
     print(f"[neural] Loaded {model_path.name} (ONNX) | active providers: {active}")
@@ -180,7 +239,7 @@ async def _warmup() -> None:
     try:
         sess = get_session()
         # Warmup with a blank image — model expects float32 input
-        dummy = np.zeros((32, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
+        dummy = np.zeros((COMPILED_BATCH_SIZE, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
         
         if USE_COREML:
             # CoreML API with dynamic names
@@ -265,39 +324,35 @@ async def embed(
     t_stack_ms = (time.time() - t_preprocess_start - t_preprocess_ms) * 1000
 
     try:
-        if USE_COREML:
-            # CoreML inference with dynamically discovered input/output names
-            # Model compiled with batch=32, so pad incoming batches to that size
-            input_name = sess._input_names[0] if hasattr(sess, '_input_names') else "pixel_values"
-            output_name = sess._output_names[0] if hasattr(sess, '_output_names') else "image_embeds"
-            
-            compiled_batch_size = 32
-            if batch_arr.shape[0] < compiled_batch_size:
-                # Pad with zero images to match compiled batch size
-                padding_size = compiled_batch_size - batch_arr.shape[0]
-                padding = np.zeros((padding_size, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
-                batch_arr = np.vstack([batch_arr, padding])
-            
-            print(f"[embed] Using CoreML input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
-            
-            # Run inference on full padded batch
-            t0 = time.time()
-            pred = sess.predict({input_name: batch_arr})
-            full_output = pred[output_name]  # (32, 512)
-            output = full_output[:num_real_images]  # Extract only real results (N, 512)
-            elapsed_ms = (time.time() - t0) * 1000
-            print(f"[embed] Preprocessing: {t_preprocess_ms:.1f}ms | CoreML inference: {elapsed_ms:.1f}ms | Total for {num_real_images} images")
-        else:
-            # ONNX Runtime inference
-            input_name = sess.get_inputs()[0].name
-            output_name = sess.get_outputs()[0].name
-            
-            print(f"[embed] Using ONNX Runtime input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
-            
-            t0 = time.time()
-            output = sess.run([output_name], {input_name: batch_arr})[0]  # (N, 512)
-            elapsed_ms = (time.time() - t0) * 1000
-            print(f"[embed] Preprocessing: {t_preprocess_ms:.1f}ms | ONNX inference: {elapsed_ms:.1f}ms | Total for {num_real_images} images")
+        t0 = time.time()
+        with _inference_lock:
+            if USE_COREML:
+                # CoreML inference with dynamically discovered input/output names
+                # Pad incoming batches to compiled batch size
+                input_name = sess._input_names[0] if hasattr(sess, '_input_names') else "pixel_values"
+                output_name = sess._output_names[0] if hasattr(sess, '_output_names') else "image_embeds"
+                
+                if batch_arr.shape[0] < COMPILED_BATCH_SIZE:
+                    # Pad with zero images to match compiled batch size
+                    padding_size = COMPILED_BATCH_SIZE - batch_arr.shape[0]
+                    padding = np.zeros((padding_size, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
+                    batch_arr = np.vstack([batch_arr, padding])
+                
+                print(f"[embed] Using CoreML input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
+                
+                pred = sess.predict({input_name: batch_arr})
+                full_output = pred[output_name]  # (32, 512)
+                output = full_output[:num_real_images]  # Extract only real results (N, 512)
+            else:
+                # ONNX Runtime inference (no padding needed)
+                input_name = sess.get_inputs()[0].name
+                output_name = sess.get_outputs()[0].name
+                print(f"[embed] Using ONNX input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
+                output = sess.run([output_name], {input_name: batch_arr})[0]  # (N, 512)
+        
+        elapsed_ms = (time.time() - t0) * 1000
+        engine_label = "CoreML" if USE_COREML else "ONNX"
+        print(f"[embed] Preprocessing: {t_preprocess_ms:.1f}ms | {engine_label} inference: {elapsed_ms:.1f}ms | Total for {num_real_images} images")
     except Exception as exc:
         import traceback
         traceback.print_exc()
