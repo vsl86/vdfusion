@@ -10,29 +10,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"vdfusion/internal/neural"
 
+	"github.com/viant/sqlite-vec/vec"
+	"github.com/viant/sqlite-vec/vector"
+
 	_ "modernc.org/sqlite"
 )
 
+// Shadow table used by the file_embeddings vec virtual table.
+// viant/sqlite-vec stores documents here; the virtual table is for MATCH queries.
+const embeddingsShadowTable = "_vec_file_embeddings"
+
 type FileRecord struct {
-	ID                int64
-	Path              string
-	Size              int64
-	Modified          int64
-	Duration          float64
-	Width             int
-	Height            int
-	PHashV2s          []uint64
-	Codec             string
-	Bitrate           int64
-	FPS               float64
-	Warnings          []string
-	IdentifierHash    string
-	NeuralEmbeddings  [][]float32 // L2-normalised CLIP ViT-B/32 embeddings, one per frame
+	ID               int64
+	Path             string
+	Size             int64
+	Modified         int64
+	Duration         float64
+	Width            int
+	Height           int
+	PHashV2s         []uint64
+	Codec            string
+	Bitrate          int64
+	FPS              float64
+	Warnings         []string
+	IdentifierHash   string
+	NeuralEmbeddings [][]float32 // L2-normalised CLIP ViT-B/32 embeddings, one per frame
 }
 
 func (r FileRecord) GetIdentifierHash() string {
@@ -63,7 +71,19 @@ func New(path string) (*Database, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Single connection keeps vec virtual-table module registration visible
+	// across all statements (required by viant/sqlite-vec + modernc).
+	db.SetMaxOpenConns(1)
+
+	// modernc applies vtab modules only to connections opened AFTER registration.
+	// Register before Ping/Exec so the first real connection has the vec module.
+	if err := vec.Register(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to register sqlite-vec: %w", err)
+	}
+
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -71,19 +91,33 @@ func New(path string) (*Database, error) {
 
 	_, err = db.Exec("PRAGMA journal_mode=WAL;")
 	if err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL: %w", err)
 	}
 	_, err = db.Exec("PRAGMA busy_timeout=5000;")
 	if err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 	_, err = db.Exec("PRAGMA foreign_keys = ON;")
 	if err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
 	if err := d.migrate(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("migration failed: %w", err)
+	}
+
+	if err := d.ensureVectorTables(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to ensure sqlite-vec tables: %w", err)
+	}
+
+	if err := d.migrateLegacyEmbeddings(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to migrate legacy embeddings: %w", err)
 	}
 
 	return d, nil
@@ -143,12 +177,16 @@ func (d *Database) migrate() error {
 		return err
 	}
 
-	d.conn.Exec("ALTER TABLE files ADD COLUMN warnings TEXT DEFAULT ''")
-	d.conn.Exec("ALTER TABLE files ADD COLUMN width INTEGER DEFAULT 0")
-	d.conn.Exec("ALTER TABLE files ADD COLUMN height INTEGER DEFAULT 0")
-	d.conn.Exec("ALTER TABLE files ADD COLUMN identifier_hash TEXT")
-	d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(identifier_hash)")
+	// Ensure columns exist on older databases (ALTER fails harmlessly if present).
+	ensureColumn(d.conn, "files", "warnings", "TEXT DEFAULT ''")
+	ensureColumn(d.conn, "files", "width", "INTEGER DEFAULT 0")
+	ensureColumn(d.conn, "files", "height", "INTEGER DEFAULT 0")
+	ensureColumn(d.conn, "files", "identifier_hash", "TEXT")
+	ensureColumn(d.conn, "files", "neural_v1", "BLOB")
 
+	_, _ = d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(identifier_hash)")
+
+	// Backfill missing identifier hashes.
 	var missingCount int
 	err = d.conn.QueryRow("SELECT COUNT(*) FROM files WHERE identifier_hash IS NULL OR identifier_hash = ''").Scan(&missingCount)
 	if err == nil && missingCount > 0 {
@@ -163,13 +201,291 @@ func (d *Database) migrate() error {
 					input := fmt.Sprintf("%d_%d", size, mod)
 					hash := sha256.Sum256([]byte(input))
 					hashStr := strings.ToUpper(hex.EncodeToString(hash[:]))
-					d.conn.Exec("UPDATE files SET identifier_hash = ? WHERE id = ?", hashStr, id)
+					_, _ = d.conn.Exec("UPDATE files SET identifier_hash = ? WHERE id = ?", hashStr, id)
 				}
 			}
 		}
 	}
 
 	return nil
+}
+
+func ensureColumn(db *sql.DB, tableName, columnName, columnDefinition string) {
+	var exists bool
+	query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM pragma_table_info('%s') WHERE name='%s')", tableName, columnName)
+	err := db.QueryRow(query).Scan(&exists)
+	if err != nil {
+		return
+	}
+	if !exists {
+		alterQuery := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, columnName, columnDefinition)
+		_, _ = db.Exec(alterQuery)
+	}
+}
+
+// ensureVectorTables creates the vec virtual table, its shadow store, and
+// vector_storage used for persisted similarity indexes.
+func (d *Database) ensureVectorTables() error {
+	// Virtual table for MATCH-based similarity (dataset_id + doc_id + match_score).
+	if _, err := d.conn.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS file_embeddings USING vec(doc_id)`); err != nil {
+		return fmt.Errorf("create file_embeddings vtab: %w", err)
+	}
+
+	// Shadow table holds the actual embedding BLOBs (one row per frame).
+	// Column layout matches viant/sqlite-vec's expected shadow schema.
+	if _, err := d.conn.Exec(fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	dataset_id TEXT NOT NULL,
+	id         TEXT NOT NULL,
+	content    TEXT,
+	meta       TEXT,
+	embedding  BLOB,
+	PRIMARY KEY(dataset_id, id)
+)`, embeddingsShadowTable)); err != nil {
+		return fmt.Errorf("create embeddings shadow table: %w", err)
+	}
+
+	if _, err := d.conn.Exec(`
+CREATE TABLE IF NOT EXISTS vector_storage (
+	shadow_table_name TEXT NOT NULL,
+	dataset_id        TEXT NOT NULL DEFAULT '',
+	"index"           BLOB,
+	PRIMARY KEY (shadow_table_name, dataset_id)
+)`); err != nil {
+		return fmt.Errorf("create vector_storage: %w", err)
+	}
+
+	return nil
+}
+
+// migrateLegacyEmbeddings moves neural_v1 BLOBs from the files table into the
+// sqlite-vec shadow store, then clears the legacy column.
+func (d *Database) migrateLegacyEmbeddings() error {
+	rows, err := d.conn.Query("SELECT id, neural_v1 FROM files WHERE neural_v1 IS NOT NULL AND length(neural_v1) > 0")
+	if err != nil {
+		// Column may not exist on brand-new schemas that somehow skipped ensureColumn.
+		if strings.Contains(err.Error(), "no such column") {
+			return nil
+		}
+		return err
+	}
+	defer rows.Close()
+
+	type legacy struct {
+		id   int64
+		blob []byte
+	}
+	var pending []legacy
+	for rows.Next() {
+		var item legacy
+		if err := rows.Scan(&item.id, &item.blob); err != nil {
+			return err
+		}
+		if len(item.blob) == 0 {
+			continue
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	fmt.Printf("DB: Migrating %d legacy neural_v1 embeddings into sqlite-vec...\n", len(pending))
+	for _, item := range pending {
+		if err := d.storeNeuralEmbeddingsByID(item.id, item.blob); err != nil {
+			return fmt.Errorf("migrate file id %d: %w", item.id, err)
+		}
+		if _, err := d.conn.Exec("UPDATE files SET neural_v1 = NULL WHERE id = ?", item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Database) fileIDByPath(path string) (int64, error) {
+	var id int64
+	err := d.conn.QueryRow("SELECT id FROM files WHERE path = ?", path).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func datasetIDForFile(fileID int64) string {
+	return strconv.FormatInt(fileID, 10)
+}
+
+// storeNeuralEmbeddingsByID unpacks a PackEmbeddings blob and writes each
+// frame vector into the sqlite-vec shadow table for the given file.
+func (d *Database) storeNeuralEmbeddingsByID(fileID int64, packed []byte) error {
+	vecs := neural.UnpackEmbeddings(packed)
+	if len(vecs) == 0 {
+		return nil
+	}
+	datasetID := datasetIDForFile(fileID)
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = ?", embeddingsShadowTable), datasetID); err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(fmt.Sprintf(
+		"INSERT INTO %s(dataset_id, id, content, meta, embedding) VALUES (?, ?, ?, ?, ?)",
+		embeddingsShadowTable,
+	))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for i, v := range vecs {
+		emb, err := vector.EncodeEmbedding(v)
+		if err != nil {
+			return err
+		}
+		docID := fmt.Sprintf("%08d", i)
+		if _, err := stmt.Exec(datasetID, docID, "", "{}", emb); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// deleteNeuralEmbeddingsByID removes all frame embeddings for a file.
+func (d *Database) deleteNeuralEmbeddingsByID(fileID int64) error {
+	datasetID := datasetIDForFile(fileID)
+	_, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = ?", embeddingsShadowTable), datasetID)
+	return err
+}
+
+func (d *Database) loadNeuralEmbeddingsByID(fileID int64) ([][]float32, error) {
+	datasetID := datasetIDForFile(fileID)
+	rows, err := d.conn.Query(
+		fmt.Sprintf("SELECT embedding FROM %s WHERE dataset_id = ? ORDER BY id", embeddingsShadowTable),
+		datasetID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result [][]float32
+	for rows.Next() {
+		var blob []byte
+		if err := rows.Scan(&blob); err != nil {
+			return nil, err
+		}
+		v, err := vector.DecodeEmbedding(blob)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// loadNeuralEmbeddingsForIDs batch-loads embeddings for many files in one query.
+func (d *Database) loadNeuralEmbeddingsForIDs(ids []int64) (map[int64][][]float32, error) {
+	out := make(map[int64][][]float32, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = datasetIDForFile(id)
+	}
+
+	query := fmt.Sprintf(
+		"SELECT dataset_id, id, embedding FROM %s WHERE dataset_id IN (%s) ORDER BY dataset_id, id",
+		embeddingsShadowTable, strings.Join(placeholders, ","),
+	)
+	rows, err := d.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var datasetID, docID string
+		var blob []byte
+		if err := rows.Scan(&datasetID, &docID, &blob); err != nil {
+			return nil, err
+		}
+		fileID, err := strconv.ParseInt(datasetID, 10, 64)
+		if err != nil {
+			continue
+		}
+		v, err := vector.DecodeEmbedding(blob)
+		if err != nil {
+			return nil, err
+		}
+		out[fileID] = append(out[fileID], v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachEmbeddings loads neural embeddings into records that need them for
+// comparison / enrichment. Metadata-only list queries skip this on purpose.
+func (d *Database) attachEmbeddings(records []FileRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(records))
+	for i, r := range records {
+		ids[i] = r.ID
+	}
+	byID, err := d.loadNeuralEmbeddingsForIDs(ids)
+	if err != nil {
+		return err
+	}
+	for i := range records {
+		if embs, ok := byID[records[i].ID]; ok {
+			records[i].NeuralEmbeddings = embs
+		}
+	}
+	return nil
+}
+
+func (d *Database) GetNeuralEmbeddingsByPath(path string) ([][]float32, error) {
+	id, err := d.fileIDByPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return d.loadNeuralEmbeddingsByID(id)
+}
+
+func (d *Database) HasNeuralEmbeddingsByID(fileID int64) (bool, error) {
+	var exists int
+	datasetID := datasetIDForFile(fileID)
+	err := d.conn.QueryRow(
+		fmt.Sprintf("SELECT 1 FROM %s WHERE dataset_id = ? LIMIT 1", embeddingsShadowTable),
+		datasetID,
+	).Scan(&exists)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *Database) GetMeta(key string) (string, error) {
@@ -239,21 +555,25 @@ func (d *Database) UpsertFile(path string, size int64, modified int64, duration 
 	return d.upsertFile(path, size, modified, duration, width, height, hashes, codec, bitrate, fps, warnings, nil)
 }
 
-// UpsertFileWithNeural is like UpsertFile but also stores neural embeddings.
-func (d *Database) UpsertFileWithNeural(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, neural []byte) error {
-	return d.upsertFile(path, size, modified, duration, width, height, hashes, codec, bitrate, fps, warnings, neural)
+// UpsertFileWithNeural is like UpsertFile but also stores neural embeddings
+// in the sqlite-vec shadow table (not in files.neural_v1).
+func (d *Database) UpsertFileWithNeural(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, packedNeural []byte) error {
+	return d.upsertFile(path, size, modified, duration, width, height, hashes, codec, bitrate, fps, warnings, packedNeural)
 }
 
-// UpdateNeuralEmbeddings stores neural embeddings for an existing file record without
-// touching any other fields. Used when a scan enriches an already-indexed file.
-func (d *Database) UpdateNeuralEmbeddings(path string, neural []byte) error {
+// UpdateNeuralEmbeddings stores neural embeddings for an existing file record
+// without touching any other fields. Used when a scan enriches an already-indexed file.
+func (d *Database) UpdateNeuralEmbeddings(path string, packedNeural []byte) error {
 	return d.withRetry(func() error {
-		_, err := d.conn.Exec("UPDATE files SET neural_v1 = ? WHERE path = ?", neural, path)
-		return err
+		fileID, err := d.fileIDByPath(path)
+		if err != nil {
+			return err
+		}
+		return d.storeNeuralEmbeddingsByID(fileID, packedNeural)
 	})
 }
 
-func (d *Database) upsertFile(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, neural []byte) error {
+func (d *Database) upsertFile(path string, size int64, modified int64, duration float64, width int, height int, hashes []uint64, codec string, bitrate int64, fps float64, warnings []string, packedNeural []byte) error {
 	packed := packHashes(hashes)
 
 	var warningsJSON string
@@ -262,9 +582,10 @@ func (d *Database) upsertFile(path string, size int64, modified int64, duration 
 		warningsJSON = string(b)
 	}
 
+	// Metadata only — embeddings live in the sqlite-vec shadow table.
 	query := `
-	INSERT INTO files (path, size, modified, duration, width, height, phashes, codec, bitrate, fps, warnings, identifier_hash, neural_v1)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, modified, duration, width, height, phashes, codec, bitrate, fps, warnings, identifier_hash)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
 		size = excluded.size,
 		modified = excluded.modified,
@@ -275,40 +596,49 @@ func (d *Database) upsertFile(path string, size int64, modified int64, duration 
 		codec = excluded.codec,
 		bitrate = excluded.bitrate,
 		fps = excluded.fps,
-		warnings = excluded.warnings,
-		neural_v1 = COALESCE(excluded.neural_v1, neural_v1);
+		warnings = excluded.warnings;
 	`
 	input := fmt.Sprintf("%d_%d", size, modified)
 	hash := sha256.Sum256([]byte(input))
 	hashStr := strings.ToUpper(hex.EncodeToString(hash[:]))
 
 	return d.withRetry(func() error {
-		_, err := d.conn.Exec(query, path, size, modified, duration, width, height, packed, codec, bitrate, fps, warningsJSON, hashStr, neural)
-		return err
+		if _, err := d.conn.Exec(query, path, size, modified, duration, width, height, packed, codec, bitrate, fps, warningsJSON, hashStr); err != nil {
+			return err
+		}
+		if len(packedNeural) == 0 {
+			return nil
+		}
+		fileID, err := d.fileIDByPath(path)
+		if err != nil {
+			return err
+		}
+		return d.storeNeuralEmbeddingsByID(fileID, packedNeural)
 	})
 }
 
-// scanFileRecord reads one row from a prepared SELECT that includes neural_v1 as the last column.
-func scanFileRecord(scan func(...any) error, unpackNeural func([]byte) [][]float32) (FileRecord, error) {
+// scanFileRecord reads one metadata row (no neural_v1 column).
+func scanFileRecord(scan func(...any) error) (FileRecord, error) {
 	var r FileRecord
 	var packed []byte
 	var warningsJSON string
-	var neuralBlob []byte
-	if err := scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash, &neuralBlob); err != nil {
+	if err := scan(&r.ID, &r.Path, &r.Size, &r.Modified, &r.Duration, &r.Width, &r.Height, &packed, &r.Codec, &r.Bitrate, &r.FPS, &warningsJSON, &r.IdentifierHash); err != nil {
 		return FileRecord{}, err
 	}
 	r.PHashV2s = unpackHashes(packed)
 	if warningsJSON != "" {
-		json.Unmarshal([]byte(warningsJSON), &r.Warnings)
-	}
-	if len(neuralBlob) > 0 {
-		r.NeuralEmbeddings = unpackNeural(neuralBlob)
+		_ = json.Unmarshal([]byte(warningsJSON), &r.Warnings)
 	}
 	return r, nil
 }
 
+const fileSelectCols = "id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, '')"
+
+// GetAllFiles returns lightweight file metadata only (no embeddings).
+// Per the isolation architecture, embeddings are loaded on demand during
+// comparison / enrichment paths.
 func (d *Database) GetAllFiles() ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files")
+	rows, err := d.conn.Query("SELECT " + fileSelectCols + " FROM files")
 	if err != nil {
 		return nil, err
 	}
@@ -316,29 +646,34 @@ func (d *Database) GetAllFiles() ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		records = append(records, r)
 	}
-	return records, nil
+	return records, rows.Err()
 }
 
 func (d *Database) GetFileByPath(path string) (*FileRecord, error) {
-	row := d.conn.QueryRow("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE path = ?", path)
-	r, err := scanFileRecord(row.Scan, neural.UnpackEmbeddings)
+	row := d.conn.QueryRow("SELECT "+fileSelectCols+" FROM files WHERE path = ?", path)
+	r, err := scanFileRecord(row.Scan)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	embeddings, err := d.loadNeuralEmbeddingsByID(r.ID)
+	if err != nil {
+		return nil, err
+	}
+	r.NeuralEmbeddings = embeddings
 	return &r, nil
 }
 
 func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE size = ? AND modified = ?", size, modified)
+	rows, err := d.conn.Query("SELECT "+fileSelectCols+" FROM files WHERE size = ? AND modified = ?", size, modified)
 	if err != nil {
 		return nil, err
 	}
@@ -346,11 +681,17 @@ func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error)
 
 	var records []FileRecord
 	for rows.Next() {
-		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		records = append(records, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.attachEmbeddings(records); err != nil {
+		return nil, err
 	}
 	return records, nil
 }
@@ -401,6 +742,9 @@ func (d *Database) GetIgnoredGroups() ([]IgnoredGroup, error) {
 		}
 		groups = append(groups, g)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	rows.Close()
 
 	for i := range groups {
@@ -408,12 +752,6 @@ func (d *Database) GetIgnoredGroups() ([]IgnoredGroup, error) {
 		groups[i].ResolvedPaths = make([]string, 0)
 
 		query := `
-			SELECT igi.identifier_hash, COALESCE(f.path, '')
-			FROM ignored_group_items igi
-			LEFT JOIN files f ON strings.ToUpper(igi.identifier_hash) = strings.ToUpper(f.identifier_hash)
-			WHERE igi.group_id = ?
-		`
-		query = `
 			SELECT igi.identifier_hash, COALESCE(f.path, '')
 			FROM ignored_group_items igi
 			LEFT JOIN files f ON igi.identifier_hash = f.identifier_hash
@@ -438,9 +776,22 @@ func (d *Database) GetIgnoredGroups() ([]IgnoredGroup, error) {
 
 	return groups, nil
 }
+
 func (d *Database) DeleteFile(path string) error {
-	_, err := d.conn.Exec("DELETE FROM files WHERE path = ?", path)
-	return err
+	return d.withRetry(func() error {
+		fileID, err := d.fileIDByPath(path)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil
+			}
+			return err
+		}
+		if err := d.deleteNeuralEmbeddingsByID(fileID); err != nil {
+			return err
+		}
+		_, err = d.conn.Exec("DELETE FROM files WHERE id = ?", fileID)
+		return err
+	})
 }
 
 func (d *Database) DeleteIgnoredGroup(id int64) error {
@@ -481,29 +832,34 @@ func (d *Database) DeleteFiles(paths []string) (int64, error) {
 		return 0, nil
 	}
 
-	tx, err := d.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare("DELETE FROM files WHERE path = ?")
-	if err != nil {
-		return 0, err
-	}
-	defer stmt.Close()
-
 	var deleted int64
-	for _, p := range paths {
-		res, err := stmt.Exec(p)
+	err := d.withRetry(func() error {
+		tx, err := d.conn.Begin()
 		if err != nil {
-			continue
+			return err
 		}
-		rows, _ := res.RowsAffected()
-		deleted += rows
-	}
+		defer tx.Rollback()
 
-	return deleted, tx.Commit()
+		deleted = 0
+		for _, p := range paths {
+			var fileID int64
+			err := tx.QueryRow("SELECT id FROM files WHERE path = ?", p).Scan(&fileID)
+			if err != nil {
+				continue
+			}
+			if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = ?", embeddingsShadowTable), datasetIDForFile(fileID)); err != nil {
+				return err
+			}
+			res, err := tx.Exec("DELETE FROM files WHERE id = ?", fileID)
+			if err != nil {
+				continue
+			}
+			rows, _ := res.RowsAffected()
+			deleted += rows
+		}
+		return tx.Commit()
+	})
+	return deleted, err
 }
 
 func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
@@ -516,7 +872,7 @@ func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
 		placeholders[i] = "?"
 		args[i] = p
 	}
-	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE path IN (%s)", strings.Join(placeholders, ","))
+	query := fmt.Sprintf("SELECT %s FROM files WHERE path IN (%s)", fileSelectCols, strings.Join(placeholders, ","))
 
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
@@ -526,15 +882,17 @@ func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
 
 	var results []FileRecord
 	for rows.Next() {
-		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		results = append(results, r)
 	}
-	return results, nil
+	return results, rows.Err()
 }
 
+// GetFilesByPrefixes returns files under the given path prefixes and attaches
+// neural embeddings (used by the comparison phase).
 func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 	if len(prefixes) == 0 {
 		return nil, nil
@@ -550,7 +908,7 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 		args = append(args, p+"%")
 	}
 
-	query := fmt.Sprintf("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE %s", strings.Join(conditions, " OR "))
+	query := fmt.Sprintf("SELECT %s FROM files WHERE %s", fileSelectCols, strings.Join(conditions, " OR "))
 
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
@@ -560,17 +918,23 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		records = append(records, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.attachEmbeddings(records); err != nil {
+		return nil, err
+	}
 	return records, nil
 }
 
 func (d *Database) GetSuspiciousFiles() ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT id, path, size, modified, duration, width, height, phashes, codec, bitrate, fps, COALESCE(warnings,''), COALESCE(identifier_hash, ''), neural_v1 FROM files WHERE warnings != '' AND warnings != '[]'")
+	rows, err := d.conn.Query("SELECT " + fileSelectCols + " FROM files WHERE warnings != '' AND warnings != '[]'")
 	if err != nil {
 		return nil, err
 	}
@@ -578,13 +942,13 @@ func (d *Database) GetSuspiciousFiles() ([]FileRecord, error) {
 
 	var records []FileRecord
 	for rows.Next() {
-		r, err := scanFileRecord(rows.Scan, neural.UnpackEmbeddings)
+		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
 		records = append(records, r)
 	}
-	return records, nil
+	return records, rows.Err()
 }
 
 func (d *Database) GetStats() (map[string]any, error) {
@@ -612,6 +976,12 @@ func (d *Database) GetStats() (map[string]any, error) {
 }
 
 func (d *Database) Reset() error {
+	if _, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s", embeddingsShadowTable)); err != nil {
+		return err
+	}
+	if _, err := d.conn.Exec(`DELETE FROM vector_storage`); err != nil {
+		return err
+	}
 	_, err := d.conn.Exec("DELETE FROM files")
 	return err
 }
@@ -660,7 +1030,7 @@ func (d *Database) Cleanup() (int, error) {
 	}
 
 	_, _ = d.conn.Exec(`
-		DELETE FROM ignored_groups 
+		DELETE FROM ignored_groups
 		WHERE id NOT IN (SELECT group_id FROM ignored_group_items)
 	`)
 

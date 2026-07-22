@@ -20,9 +20,10 @@ import (
 )
 
 type Walker struct {
-	db           *db.Database
-	reporter     ProgressReporter
-	neuralClient *neural.Client // optional; nil = pHash-only mode
+	db                  *db.Database
+	reporter            ProgressReporter
+	neuralClient        *neural.Client        // optional; nil = pHash-only mode
+	neuralBatchEmbedder *neural.BatchEmbedder // optional; wraps neuralClient for batch processing
 }
 
 func NewWalker(d *db.Database, reporter ProgressReporter) *Walker {
@@ -36,13 +37,32 @@ func (w *Walker) SetReporter(reporter ProgressReporter) {
 func (w *Walker) SetNeuralClient(c *neural.Client) {
 	log.Printf("Walker.SetNeuralClient called: c=%v", c)
 	w.neuralClient = c
+	if c != nil {
+		w.neuralBatchEmbedder = neural.NewBatchEmbedder(c)
+	} else {
+		w.neuralBatchEmbedder = nil
+	}
+}
+
+func (w *Walker) SetNeuralBatchEmbedder(be *neural.BatchEmbedder) {
+	log.Printf("Walker.SetNeuralBatchEmbedder called: be=%v", be)
+	w.neuralBatchEmbedder = be
+	if be != nil {
+		w.neuralClient = nil // Avoid using both at the same time
+	}
 }
 
 func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Settings) (map[string]bool, error) {
 	startTime := time.Now()
 
 	w.report(0, 0, "discovery", "", startTime)
-	log.Printf("Walker: starting index with neural client: %v", w.neuralClient != nil)
+	log.Printf("Walker: starting index with neural client: %v, batch embedder: %v", w.neuralClient != nil, w.neuralBatchEmbedder != nil)
+
+	// Start batch embedder if available
+	if w.neuralBatchEmbedder != nil {
+		w.neuralBatchEmbedder.Start(ctx)
+		log.Printf("Walker: started neural batch embedder")
+	}
 
 	var allFiles []string
 	var mu sync.Mutex
@@ -199,7 +219,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 
 				existing, _ := w.db.GetFileByPath(path)
 				modTime := fileInfo.ModTime().Unix()
-				needsNeural := existing != nil && w.neuralClient != nil && len(existing.NeuralEmbeddings) == 0
+				needsNeural := existing != nil && (w.neuralClient != nil || w.neuralBatchEmbedder != nil) && len(existing.NeuralEmbeddings) == 0
 				isUnmodified := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime
 
 				if isUnmodified && cfg.RecheckSuspicious && len(existing.Warnings) > 0 {
@@ -214,7 +234,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 								w.throttledReport(int(newProcessed), totalFiles, "scanning", path, startTime)
 								continue
 							}
-							
+
 							// Just update metadata if missing
 							log.Printf("Walker: Updating missing metadata for %s", path)
 							meta, err := media.ProbeNative(path)
@@ -283,7 +303,13 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 								}
 							}
 							if len(jpegFrames) > 0 {
-								embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
+								var embeddings [][]float32
+								var nerr error
+								if w.neuralBatchEmbedder != nil {
+									embeddings, nerr = w.neuralBatchEmbedder.Embed(ctx, jpegFrames)
+								} else if w.neuralClient != nil {
+									embeddings, nerr = w.neuralClient.Embed(ctx, jpegFrames)
+								}
 								if nerr == nil {
 									neuralBlob := neural.PackEmbeddings(embeddings)
 									_ = w.db.UpdateNeuralEmbeddings(path, neuralBlob)
@@ -296,8 +322,9 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					}
 				}
 
-				// If we get here: either it's a new file, or suspicious
-				log.Printf("Walker: processing file %s, needsNeural=%v, neuralClient=%v", path, needsNeural, w.neuralClient != nil)
+				if cfg.DebugLogging {
+					log.Printf("Walker: processing file %s, needsNeural=%v, neuralClient=%v, neuralBatchEmbedder=%v", path, needsNeural, w.neuralClient != nil, w.neuralBatchEmbedder != nil)
+				}
 
 				peers, _ := w.db.GetFilesByContent(fileInfo.Size(), modTime)
 				var reusablehashes []uint64
@@ -398,7 +425,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					if err == nil {
 						hashes = append(hashes, phash.ComputeV2(gray))
 						// Also grab JPEG for neural embedding when needed
-						if w.neuralClient != nil {
+						if w.neuralClient != nil || w.neuralBatchEmbedder != nil {
 							jpeg, jerr := media.ExtractThumbnailNative(ctx, path, timestamp, 224, 0)
 							if jerr != nil {
 								jpeg, _ = media.ExtractThumbnail(ctx, path, timestamp, 224, 224)
@@ -416,10 +443,17 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 
 				// Attempt neural embedding for new/changed files
 				var neuralBlob []byte
-				log.Printf("Walker: about to check neural for %s: w.neuralClient=%v, len(jpegFrames)=%d", path, w.neuralClient != nil, len(jpegFrames))
-				if w.neuralClient != nil && len(jpegFrames) > 0 {
-					log.Printf("Walker: calling neuralClient.Embed for %s", path)
-					embeddings, nerr := w.neuralClient.Embed(ctx, jpegFrames)
+				log.Printf("Walker: about to check neural for %s: w.neuralClient=%v, w.neuralBatchEmbedder=%v, len(jpegFrames)=%d", path, w.neuralClient != nil, w.neuralBatchEmbedder != nil, len(jpegFrames))
+				if (w.neuralClient != nil || w.neuralBatchEmbedder != nil) && len(jpegFrames) > 0 {
+					var embeddings [][]float32
+					var nerr error
+					if w.neuralBatchEmbedder != nil {
+						log.Printf("Walker: calling neuralBatchEmbedder.Embed for %s", path)
+						embeddings, nerr = w.neuralBatchEmbedder.Embed(ctx, jpegFrames)
+					} else if w.neuralClient != nil {
+						log.Printf("Walker: calling neuralClient.Embed for %s", path)
+						embeddings, nerr = w.neuralClient.Embed(ctx, jpegFrames)
+					}
 					if nerr != nil {
 						log.Printf("Walker: neural embed failed for %s: %v", path, nerr)
 					} else {

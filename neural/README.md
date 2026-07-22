@@ -103,3 +103,18 @@ resolution-scaled duplicates that pHash misses.
 
 vdfusion uses the **same similarity threshold** as for pHash — adjust it in
 Settings → Similarity if you get too many or too few matches.
+
+## OS detection
+
+- Added OS detection (CoreML only on macOS)
+- Auto-enables FORCE_ONNX when:
+- CoreML is not available
+- System has <16 GB RAM
+Respects all env vars:
+- MODEL_DIR
+- FORCE_ONNX
+- MAX_BATCH
+- COMPILED_BATCH_SIZE
+- PREPROCESS_WORKERS
+- COREML_COMPUTE_UNITS
+- 
