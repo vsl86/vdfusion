@@ -378,11 +378,17 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 	return tolerance
 }
 
+const phashNeuralGate = 0.40
+
 func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
 	required := cfg.Percent / 100.0
+	phashScore := e.phashSimilarity(a, b)
 
-	// Neural mode: use cosine similarity between CLIP embeddings when both records have them.
+	// Neural mode: pHash gate first (when hashes exist), then cosine similarity.
 	if len(a.NeuralEmbeddings) > 0 && len(b.NeuralEmbeddings) > 0 {
+		if phashScore > 0 && phashScore < phashNeuralGate {
+			return false, phashScore
+		}
 		score, ok := neural.AverageCosineSimilarity(a.NeuralEmbeddings, b.NeuralEmbeddings)
 		if ok {
 			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring
@@ -391,18 +397,23 @@ func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) 
 		}
 	}
 
-	// Fallback: pHash Hamming distance
+	if phashScore == 0 {
+		return false, 0
+	}
+	return phashScore >= required, phashScore
+}
+
+func (e *ComparisonEngine) phashSimilarity(a, b db.FileRecord) float64 {
 	frames := min(len(a.PHashV2s), len(b.PHashV2s))
 	if frames == 0 {
-		return false, 0
+		return 0
 	}
 	total := 0.0
 	for i := 0; i < frames; i++ {
 		dist := phashHamming(a.PHashV2s[i], b.PHashV2s[i])
 		total += 1.0 - (float64(dist) / 64.0)
 	}
-	avg := total / float64(frames)
-	return avg >= required, avg
+	return total / float64(frames)
 }
 
 func phashHamming(a, b uint64) int {

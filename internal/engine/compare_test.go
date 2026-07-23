@@ -155,6 +155,19 @@ func TestIsDuplicate(t *testing.T) {
 			settings: config.Settings{Percent: 90},
 			wantIs:   false,
 		},
+		{
+			name: "Neural match blocked by low pHash gate",
+			a: db.FileRecord{
+				PHashV2s:         []uint64{0},
+				NeuralEmbeddings: testVec1,
+			},
+			b: db.FileRecord{
+				PHashV2s:         []uint64{(1 << 39) - 1},
+				NeuralEmbeddings: testVec2,
+			},
+			settings: config.Settings{Percent: 90},
+			wantIs:   false,
+		},
 	}
 
 	e := NewComparisonEngine()

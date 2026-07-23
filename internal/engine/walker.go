@@ -134,7 +134,7 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 		thumbCount = 4
 	}
 
-	existingRecords, _ := w.db.GetFilesByPrefixes(paths)
+	existingRecords, _ := w.db.GetFilesByPrefixesMetadata(paths)
 	existingByPath := make(map[string]*db.FileRecord, len(existingRecords))
 	for i := range existingRecords {
 		existingByPath[existingRecords[i].Path] = &existingRecords[i]
@@ -217,9 +217,13 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					thumbCount = 4
 				}
 
-				existing, _ := w.db.GetFileByPath(path)
+				existing := existingByPath[path]
 				modTime := fileInfo.ModTime().Unix()
-				needsNeural := existing != nil && (w.neuralClient != nil || w.neuralBatchEmbedder != nil) && len(existing.NeuralEmbeddings) == 0
+				needsNeural := false
+				if existing != nil && (w.neuralClient != nil || w.neuralBatchEmbedder != nil) {
+					hasEmb, _ := w.db.HasNeuralEmbeddingsByID(existing.ID)
+					needsNeural = !hasEmb
+				}
 				isUnmodified := existing != nil && existing.Size == fileInfo.Size() && existing.Modified == modTime
 
 				if isUnmodified && cfg.RecheckSuspicious && len(existing.Warnings) > 0 {
@@ -376,13 +380,18 @@ func (w *Walker) IndexPaths(ctx context.Context, paths []string, cfg config.Sett
 					if len(finalHashes) > thumbCount {
 						finalHashes = finalHashes[:thumbCount]
 					}
-					// Check if peer has neural embeddings
 					var neuralBlob []byte
 					for _, peerFile := range peers {
-						if len(peerFile.NeuralEmbeddings) > 0 {
-							neuralBlob = neural.PackEmbeddings(peerFile.NeuralEmbeddings)
-							break
+						hasEmb, err := w.db.HasNeuralEmbeddingsByID(peerFile.ID)
+						if err != nil || !hasEmb {
+							continue
 						}
+						embs, err := w.db.GetNeuralEmbeddingsByID(peerFile.ID)
+						if err != nil || len(embs) == 0 {
+							continue
+						}
+						neuralBlob = neural.PackEmbeddings(embs)
+						break
 					}
 
 					if len(neuralBlob) > 0 {

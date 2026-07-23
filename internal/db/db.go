@@ -443,7 +443,11 @@ func (d *Database) GetNeuralEmbeddingsByPath(path string) ([][]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	return d.loadNeuralEmbeddingsByID(id)
+	return d.GetNeuralEmbeddingsByID(id)
+}
+
+func (d *Database) GetNeuralEmbeddingsByID(fileID int64) ([][]float32, error) {
+	return d.loadNeuralEmbeddingsByID(fileID)
 }
 
 func (d *Database) HasNeuralEmbeddingsByID(fileID int64) (bool, error) {
@@ -647,8 +651,7 @@ func (d *Database) GetFileByPath(path string) (*FileRecord, error) {
 }
 
 func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error) {
-	const cond = "size = ? AND modified = ?"
-	rows, err := d.conn.Query("SELECT "+fileSelectCols+" FROM files WHERE "+cond, size, modified)
+	rows, err := d.conn.Query("SELECT "+fileSelectCols+" FROM files WHERE size = ? AND modified = ?", size, modified)
 	if err != nil {
 		return nil, err
 	}
@@ -662,19 +665,7 @@ func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error)
 		}
 		records = append(records, r)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	byID, err := d.loadNeuralEmbeddingsByFileCondition(cond, []any{size, modified})
-	if err != nil {
-		return nil, err
-	}
-	for i := range records {
-		if embs, ok := byID[records[i].ID]; ok {
-			records[i].NeuralEmbeddings = embs
-		}
-	}
-	return records, nil
+	return records, rows.Err()
 }
 
 func (d *Database) UpdatePath(oldPath, newPath string) error {
@@ -872,11 +863,40 @@ func (d *Database) GetFilesByPaths(paths []string) ([]FileRecord, error) {
 	return results, rows.Err()
 }
 
+// GetFilesByPrefixesMetadata returns file metadata under the given path prefixes
+// without loading neural embeddings (used during scan discovery).
+func (d *Database) GetFilesByPrefixesMetadata(prefixes []string) ([]FileRecord, error) {
+	return d.queryFilesByPrefixes(prefixes)
+}
+
 // GetFilesByPrefixes returns files under the given path prefixes and attaches
 // neural embeddings (used by the comparison phase).
 func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
+	records, cond, args, err := d.queryFilesByPrefixesWithCondition(prefixes)
+	if err != nil || len(records) == 0 {
+		return records, err
+	}
+
+	byID, err := d.loadNeuralEmbeddingsByFileCondition(cond, args)
+	if err != nil {
+		return nil, err
+	}
+	for i := range records {
+		if embs, ok := byID[records[i].ID]; ok {
+			records[i].NeuralEmbeddings = embs
+		}
+	}
+	return records, nil
+}
+
+func (d *Database) queryFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
+	records, _, _, err := d.queryFilesByPrefixesWithCondition(prefixes)
+	return records, err
+}
+
+func (d *Database) queryFilesByPrefixesWithCondition(prefixes []string) ([]FileRecord, string, []any, error) {
 	if len(prefixes) == 0 {
-		return nil, nil
+		return nil, "", nil, nil
 	}
 
 	var conditions []string
@@ -893,7 +913,7 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 	query := fmt.Sprintf("SELECT %s FROM files f WHERE %s", fileSelectCols, cond)
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	defer rows.Close()
 
@@ -901,25 +921,14 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 	for rows.Next() {
 		r, err := scanFileRecord(rows.Scan)
 		if err != nil {
-			return nil, err
+			return nil, "", nil, err
 		}
 		records = append(records, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
-
-	// Re-use the same condition + args to JOIN embeddings — no IN clause needed.
-	byID, err := d.loadNeuralEmbeddingsByFileCondition(cond, args)
-	if err != nil {
-		return nil, err
-	}
-	for i := range records {
-		if embs, ok := byID[records[i].ID]; ok {
-			records[i].NeuralEmbeddings = embs
-		}
-	}
-	return records, nil
+	return records, cond, args, nil
 }
 
 func (d *Database) GetSuspiciousFiles() ([]FileRecord, error) {
