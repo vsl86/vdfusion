@@ -186,27 +186,41 @@ func (be *BatchEmbedder) run(ctx context.Context) {
 	var currentBatch [][]byte
 	var batchRequests []batchRequest
 
-	// Linger timeout to prevent holding requests too long when throughput is low.
+	const maxBatch = 32
 	const linger = 20 * time.Millisecond
 	timer := time.NewTimer(linger)
 	defer timer.Stop()
+
+	flush := func() {
+		if len(currentBatch) == 0 {
+			return
+		}
+		be.process(ctx, currentBatch, batchRequests)
+		currentBatch = nil
+		batchRequests = nil
+	}
 
 	for {
 		select {
 		case req, ok := <-be.requestChan:
 			if !ok {
-				// Channel closed, process remaining and exit
-				be.process(ctx, currentBatch, batchRequests)
+				flush()
 				return
+			}
+			if len(req.images) == 0 {
+				req.resultChan <- nil
+				continue
+			}
+
+			if len(currentBatch)+len(req.images) > maxBatch && len(currentBatch) > 0 {
+				flush()
 			}
 
 			currentBatch = append(currentBatch, req.images...)
 			batchRequests = append(batchRequests, req)
 
-			// If we hit the max batch size (32), process immediately.
-			if len(currentBatch) >= 32 {
-				be.process(ctx, currentBatch, batchRequests)
-				// Reset timer
+			if len(currentBatch) >= maxBatch {
+				flush()
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -217,16 +231,11 @@ func (be *BatchEmbedder) run(ctx context.Context) {
 			}
 
 		case <-timer.C:
-			// Linger timeout reached, process current collection.
-			if len(currentBatch) > 0 {
-				be.process(ctx, currentBatch, batchRequests)
-			}
+			flush()
 			timer.Reset(linger)
 
 		case <-ctx.Done():
-			if len(currentBatch) > 0 {
-				be.process(ctx, currentBatch, batchRequests)
-			}
+			flush()
 			return
 		}
 	}
@@ -245,9 +254,6 @@ func (be *BatchEmbedder) process(ctx context.Context, currentBatch [][]byte, bat
 		for _, req := range batchRequests {
 			req.errChan <- err
 		}
-		// Clear state for next batch.
-		currentBatch = nil
-		batchRequests = nil
 		return
 	}
 
@@ -265,8 +271,4 @@ func (be *BatchEmbedder) process(ctx context.Context, currentBatch [][]byte, bat
 		req.resultChan <- res
 		idx += numInReq
 	}
-
-	// Reset state for next batch.
-	currentBatch = nil
-	batchRequests = nil
 }
