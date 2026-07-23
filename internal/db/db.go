@@ -396,23 +396,22 @@ func (d *Database) loadNeuralEmbeddingsByID(fileID int64) ([][]float32, error) {
 	return result, nil
 }
 
-// loadNeuralEmbeddingsForIDs batch-loads embeddings for many files in one query.
-func (d *Database) loadNeuralEmbeddingsForIDs(ids []int64) (map[int64][][]float32, error) {
-	out := make(map[int64][][]float32, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = datasetIDForFile(id)
-	}
-
-	query := fmt.Sprintf(
-		"SELECT dataset_id, id, embedding FROM %s WHERE dataset_id IN (%s) ORDER BY dataset_id, id",
-		embeddingsShadowTable, strings.Join(placeholders, ","),
+// loadNeuralEmbeddingsByFileCondition loads embeddings for all files matching
+// the given SQL WHERE condition on the files table. It JOINs the embeddings
+// shadow table directly instead of building an IN (?,?,...) clause, so there
+// is no bound-parameter count limit regardless of how many files match.
+//
+// cond is appended after "WHERE", e.g. "path LIKE ? OR path LIKE ?".
+// args are the corresponding bind values.
+func (d *Database) loadNeuralEmbeddingsByFileCondition(cond string, args []any) (map[int64][][]float32, error) {
+	out := make(map[int64][][]float32)
+	query := fmt.Sprintf(`
+SELECT e.dataset_id, e.embedding
+FROM %s e
+INNER JOIN files f ON e.dataset_id = CAST(f.id AS TEXT)
+WHERE %s
+ORDER BY e.dataset_id, e.id`,
+		embeddingsShadowTable, cond,
 	)
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
@@ -421,9 +420,9 @@ func (d *Database) loadNeuralEmbeddingsForIDs(ids []int64) (map[int64][][]float3
 	defer rows.Close()
 
 	for rows.Next() {
-		var datasetID, docID string
+		var datasetID string
 		var blob []byte
-		if err := rows.Scan(&datasetID, &docID, &blob); err != nil {
+		if err := rows.Scan(&datasetID, &blob); err != nil {
 			return nil, err
 		}
 		fileID, err := strconv.ParseInt(datasetID, 10, 64)
@@ -436,32 +435,7 @@ func (d *Database) loadNeuralEmbeddingsForIDs(ids []int64) (map[int64][][]float3
 		}
 		out[fileID] = append(out[fileID], v)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// attachEmbeddings loads neural embeddings into records that need them for
-// comparison / enrichment. Metadata-only list queries skip this on purpose.
-func (d *Database) attachEmbeddings(records []FileRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-	ids := make([]int64, len(records))
-	for i, r := range records {
-		ids[i] = r.ID
-	}
-	byID, err := d.loadNeuralEmbeddingsForIDs(ids)
-	if err != nil {
-		return err
-	}
-	for i := range records {
-		if embs, ok := byID[records[i].ID]; ok {
-			records[i].NeuralEmbeddings = embs
-		}
-	}
-	return nil
+	return out, rows.Err()
 }
 
 func (d *Database) GetNeuralEmbeddingsByPath(path string) ([][]float32, error) {
@@ -673,7 +647,8 @@ func (d *Database) GetFileByPath(path string) (*FileRecord, error) {
 }
 
 func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error) {
-	rows, err := d.conn.Query("SELECT "+fileSelectCols+" FROM files WHERE size = ? AND modified = ?", size, modified)
+	const cond = "size = ? AND modified = ?"
+	rows, err := d.conn.Query("SELECT "+fileSelectCols+" FROM files WHERE "+cond, size, modified)
 	if err != nil {
 		return nil, err
 	}
@@ -690,8 +665,14 @@ func (d *Database) GetFilesByContent(size, modified int64) ([]FileRecord, error)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := d.attachEmbeddings(records); err != nil {
+	byID, err := d.loadNeuralEmbeddingsByFileCondition(cond, []any{size, modified})
+	if err != nil {
 		return nil, err
+	}
+	for i := range records {
+		if embs, ok := byID[records[i].ID]; ok {
+			records[i].NeuralEmbeddings = embs
+		}
 	}
 	return records, nil
 }
@@ -901,15 +882,15 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 	var conditions []string
 	var args []any
 	for _, p := range prefixes {
-		conditions = append(conditions, "path LIKE ?")
+		conditions = append(conditions, "f.path LIKE ?")
 		if !strings.HasSuffix(p, string(os.PathSeparator)) {
 			p += string(os.PathSeparator)
 		}
 		args = append(args, p+"%")
 	}
+	cond := strings.Join(conditions, " OR ")
 
-	query := fmt.Sprintf("SELECT %s FROM files WHERE %s", fileSelectCols, strings.Join(conditions, " OR "))
-
+	query := fmt.Sprintf("SELECT %s FROM files f WHERE %s", fileSelectCols, cond)
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -927,8 +908,16 @@ func (d *Database) GetFilesByPrefixes(prefixes []string) ([]FileRecord, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := d.attachEmbeddings(records); err != nil {
+
+	// Re-use the same condition + args to JOIN embeddings — no IN clause needed.
+	byID, err := d.loadNeuralEmbeddingsByFileCondition(cond, args)
+	if err != nil {
 		return nil, err
+	}
+	for i := range records {
+		if embs, ok := byID[records[i].ID]; ok {
+			records[i].NeuralEmbeddings = embs
+		}
 	}
 	return records, nil
 }
