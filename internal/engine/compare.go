@@ -217,7 +217,13 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 			maxSim = s.maxSim
 		}
 	}
-	statsMsg := fmt.Sprintf("Comparison Stats: Performed=%d, SkipDuration=%d, SkipHash=%d, MaxSimFound=%.1f%%", totalComp, totalSkipD, totalSkipH, maxSim*100.0)
+	totalNeuralComp := 0
+	totalNeuralGateSkip := 0
+	for _, s := range cstats {
+		totalNeuralComp += s.neuralComp
+		totalNeuralGateSkip += s.neuralGateSkip
+	}
+	statsMsg := fmt.Sprintf("Comparison Stats: Performed=%d, Neural=%d, NeuralGateSkip=%d, SkipDuration=%d, SkipHash=%d, MaxSimFound=%.1f%%", totalComp, totalNeuralComp, totalNeuralGateSkip, totalSkipD, totalSkipH, maxSim*100.0)
 	log.Printf("%s", statsMsg)
 	if reporter != nil {
 		reporter.BroadcastLog("info", statsMsg)
@@ -305,10 +311,12 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 }
 
 type counters struct {
-	comp   int
-	skipD  int
-	skipH  int
-	maxSim float64
+	comp           int
+	skipD          int
+	skipH          int
+	neuralComp     int
+	neuralGateSkip int
+	maxSim         float64
 }
 
 func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings) bool {
@@ -325,7 +333,7 @@ func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol f
 		return false
 	}
 	local.comp++
-	isDup, score := e.isDuplicate(r, comp, cfg)
+	isDup, score := e.isDuplicateWithStats(r, comp, cfg, local)
 	if score > local.maxSim {
 		local.maxSim = score
 	}
@@ -378,20 +386,32 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 	return tolerance
 }
 
-const phashNeuralGate = 0.40
+const phashNeuralGate = 0.60
 
 func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
+	return e.isDuplicateWithStats(a, b, cfg, nil)
+}
+
+func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.Settings, local *counters) (bool, float64) {
 	required := cfg.Percent / 100.0
 	phashScore := e.phashSimilarity(a, b)
 
-	// Neural mode: pHash gate first (when hashes exist), then cosine similarity.
+	// Neural mode: pHash gate first (when hashes exist), then trim-tolerant
+	// cosine similarity. This is tuned for the same underlying video across
+	// quality/scale/trim changes, not broad semantic matching.
 	if len(a.NeuralEmbeddings) > 0 && len(b.NeuralEmbeddings) > 0 {
 		if phashScore > 0 && phashScore < phashNeuralGate {
+			if local != nil {
+				local.neuralGateSkip++
+			}
 			return false, phashScore
 		}
-		score, ok := neural.AverageCosineSimilarity(a.NeuralEmbeddings, b.NeuralEmbeddings)
+		score, ok := e.neuralSimilarity(a.NeuralEmbeddings, b.NeuralEmbeddings)
 		if ok {
-			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring
+			if local != nil {
+				local.neuralComp++
+			}
+			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring.
 			normScore := (score + 1.0) / 2.0
 			return normScore >= required, normScore
 		}
@@ -404,16 +424,51 @@ func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) 
 }
 
 func (e *ComparisonEngine) phashSimilarity(a, b db.FileRecord) float64 {
-	frames := min(len(a.PHashV2s), len(b.PHashV2s))
-	if frames == 0 {
+	return bestTemporalAlignmentScore(len(a.PHashV2s), len(b.PHashV2s), func(i, j int) float64 {
+		dist := phashHamming(a.PHashV2s[i], b.PHashV2s[j])
+		return 1.0 - (float64(dist) / 64.0)
+	})
+}
+
+func (e *ComparisonEngine) neuralSimilarity(a, b [][]float32) (float64, bool) {
+	score := bestTemporalAlignmentScore(len(a), len(b), func(i, j int) float64 {
+		return neural.CosineSimilarity(a[i], b[j])
+	})
+	return score, score != 0
+}
+
+func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float64 {
+	if n == 0 || m == 0 {
 		return 0
 	}
-	total := 0.0
-	for i := 0; i < frames; i++ {
-		dist := phashHamming(a.PHashV2s[i], b.PHashV2s[i])
-		total += 1.0 - (float64(dist) / 64.0)
+
+	minFrames := min(n, m)
+	minOverlap := max(1, minFrames/2)
+	best := 0.0
+
+	// Offset means j = i + offset. Trying all offsets makes comparison tolerant
+	// of intros/outros/trims shifting sampled frames while preserving order.
+	for offset := -n + 1; offset <= m-1; offset++ {
+		total := 0.0
+		count := 0
+		for i := 0; i < n; i++ {
+			j := i + offset
+			if j < 0 || j >= m {
+				continue
+			}
+			total += scoreAt(i, j)
+			count++
+		}
+		if count < minOverlap {
+			continue
+		}
+		avg := total / float64(count)
+		if avg > best {
+			best = avg
+		}
 	}
-	return total / float64(frames)
+
+	return best
 }
 
 func phashHamming(a, b uint64) int {
