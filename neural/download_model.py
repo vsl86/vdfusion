@@ -4,6 +4,7 @@ Download the CLIP ViT-B/32 visual ONNX model and convert to CoreML (MLProgram fo
 
 Usage (inside container or local venv):
     python download_model.py [--output-dir /models] [--batch-size 32]
+    python download_model.py [--output-dir /models] [--batch-sizes 1,2,4,8,16,32]
 
 The visual encoder is exported from openai/clip-vit-base-patch32 via
 the clip-as-service / optimum-onnx pipeline and published to HuggingFace Hub.
@@ -54,17 +55,17 @@ def _convert_to_coreml(onnx_path: Path, output_dir: Path, batch_size: int) -> Pa
     mlmodelc_path = output_dir / mlmodelc_filename
 
     if coreml_path.exists():
-        if not mlmodelc_path.exists():
+        if mlmodelc_path.exists():
             print(f"[convert] Pre-compiled CoreML model already present at {mlmodelc_path}, skipping.")
             return coreml_path
-        else:
-            print(f"[convert] Pre-compiling existing CoreML model to {mlmodelc_path.name}…")
-            try:
-                from coremltools.models.utils import compile_model
-                compile_model(str(coreml_path), destination_path=str(mlmodelc_path))
-                print(f"[convert] Pre-compiled model ready at {mlmodelc_path}")
-            except Exception as e:
-                    print(f"[convert] Pre-compilation failed: {e}")
+
+        print(f"[convert] Pre-compiling existing CoreML model to {mlmodelc_path.name}…")
+        try:
+            from coremltools.models.utils import compile_model
+            compile_model(str(coreml_path), destination_path=str(mlmodelc_path))
+            print(f"[convert] Pre-compiled model ready at {mlmodelc_path}")
+        except Exception as e:
+            print(f"[convert] Pre-compilation failed: {e}")
         return coreml_path
 
     print(f"[convert] Converting ONNX to CoreML MLProgram format with batch size {batch_size}…")
@@ -150,9 +151,28 @@ def download(output_dir: Path, batch_size: int) -> Path:
     return model_path
 
 
+def download_batch_variants(output_dir: Path, batch_sizes: list[int]) -> list[Path]:
+    """Download ONNX once, then convert one CoreML variant per fixed batch size."""
+    paths = []
+    for batch_size in batch_sizes:
+        paths.append(download(output_dir, batch_size))
+    return paths
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default="/models", type=Path)
     parser.add_argument("--batch-size", type=int, default=32, help="Compiled batch size for ANE (default: 32)")
+    parser.add_argument(
+        "--batch-sizes",
+        type=str,
+        default=None,
+        help="Comma-separated compiled batch sizes to generate, e.g. 1,2,4,8,16,32",
+    )
     args = parser.parse_args()
-    download(args.output_dir, args.batch_size)
+
+    if args.batch_sizes:
+        batch_sizes = [int(part.strip()) for part in args.batch_sizes.split(",") if part.strip()]
+        download_batch_variants(args.output_dir, batch_sizes)
+    else:
+        download(args.output_dir, args.batch_size)

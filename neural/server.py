@@ -61,35 +61,34 @@ max_batch_env = os.environ.get("MAX_BATCH")
 preprocess_workers_env = os.environ.get("PREPROCESS_WORKERS")
 force_onnx_env = os.environ.get("FORCE_ONNX")
 
-# Auto-enable FORCE_ONNX if CoreML is not available, or on low-memory systems
+# Auto-enable FORCE_ONNX only when CoreML is unavailable. On low-memory Macs we
+# instead use a smaller CoreML micro-batch and verify it with worker warmup.
 if not COREML_AVAILABLE:
     FORCE_ONNX = True
     print(f"[neural] CoreML not available, auto-enabling FORCE_ONNX")
-elif force_onnx_env is None and mem.total < 16 * 1024**3:
-    FORCE_ONNX = True
-    print(f"[neural] Low memory system detected (<16GB), auto-enabling FORCE_ONNX to avoid segfaults")
 else:
     FORCE_ONNX = force_onnx_env == "1"
 
 if compiled_batch_size_env is not None:
     COMPILED_BATCH_SIZE = int(compiled_batch_size_env)
 else:
-    if mem.total < 16 * 1024**3:
-        COMPILED_BATCH_SIZE = 24
+    if mem.total < 12 * 1024**3:
+        # M1/M2 Air 8GB-class machines can hang in CoreML/ANE warmup at bs4.
+        # Prefer a known-small micro-batch instead of probing upward.
+        COMPILED_BATCH_SIZE = 2
+    elif mem.total < 16 * 1024**3:
+        COMPILED_BATCH_SIZE = 4
     elif mem.total < 32 * 1024**3:
-        COMPILED_BATCH_SIZE = 24
+        COMPILED_BATCH_SIZE = 16
     else:
         COMPILED_BATCH_SIZE = 32
 
 if max_batch_env is not None:
     MAX_BATCH = int(max_batch_env)
 else:
-    if mem.total < 16 * 1024**3:
-        MAX_BATCH = 24
-    elif mem.total < 32 * 1024**3:
-        MAX_BATCH = 24
-    else:
-        MAX_BATCH = 32
+    # REST batch size is independent from the CoreML compiled micro-batch. Large
+    # incoming requests are split into COMPILED_BATCH_SIZE chunks for ANE.
+    MAX_BATCH = 32
 
 if preprocess_workers_env is not None:
     PREPROCESS_WORKERS = int(preprocess_workers_env)
@@ -149,7 +148,8 @@ _inference_lock = threading.Lock()
 
 def _build_session(model_path: Path) -> object:
     """Create an inference session, preferring CoreML MLProgram/MLModelC via dedicated worker process."""
-    
+    global USE_COREML, VISUAL_MODEL
+
     if USE_COREML:
         print(f"[neural] Spawning CoreML worker process ({model_path.name}) for ANE acceleration…")
         try:
@@ -158,19 +158,33 @@ def _build_session(model_path: Path) -> object:
             # Valid values: 0=CPU_ONLY, 1=CPU_AND_GPU, 2=CPU_AND_NE, 3=ALL
             compute_units_env = os.environ.get("COREML_COMPUTE_UNITS")
             compute_units = int(compute_units_env) if compute_units_env is not None else None
-            bridge = CoreMLProcessBridge(model_path, compute_units=compute_units)
+            startup_timeout = float(os.environ.get("COREML_STARTUP_TIMEOUT", "60"))
+            predict_timeout = float(os.environ.get("COREML_PREDICT_TIMEOUT", "60"))
+            bridge = CoreMLProcessBridge(
+                model_path,
+                compute_units=compute_units,
+                compiled_batch_size=COMPILED_BATCH_SIZE,
+                startup_timeout=startup_timeout,
+                predict_timeout=predict_timeout,
+            )
             print(f"[neural] Loaded {model_path.name} via CoreML worker process!")
             return bridge
         except Exception as e:
             print(f"[neural] CoreML worker process failed ({e}). Falling back to ONNX Runtime…")
+            print(
+                f"[neural] Try smaller ANE footprint with: "
+                f"COMPILED_BATCH_SIZE=2 MAX_BATCH={MAX_BATCH} PREPROCESS_WORKERS=1"
+            )
             model_path = VISUAL_MODEL_ONNX
-            
+            VISUAL_MODEL = VISUAL_MODEL_ONNX
+            USE_COREML = False
+
     # ONNX Runtime fallback
     print(f"[neural] Loading ONNX model ({model_path.name}) with CoreML provider…")
-    
+
     available = ort.get_available_providers()
     print(f"[neural] Available providers: {available}")
-    
+
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
     opts.inter_op_num_threads = int(os.environ.get("ORT_THREADS", "4"))
@@ -186,7 +200,7 @@ def _build_session(model_path: Path) -> object:
         print(f"[neural] Failed initializing with preferred providers: {e}")
         print("[neural] Falling back to CPU only")
         session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
-    
+
     active = session.get_providers()
     print(f"[neural] Loaded {model_path.name} (ONNX) | active providers: {active}")
     return session
@@ -240,15 +254,10 @@ async def _warmup() -> None:
         sess = get_session()
         # Warmup with a blank image — model expects float32 input
         dummy = np.zeros((COMPILED_BATCH_SIZE, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
-        
+
         if USE_COREML:
-            # CoreML API with dynamic names
-            if hasattr(sess, '_input_names') and sess._input_names:
-                input_name = sess._input_names[0]
-                print(f"[neural] Warmup using CoreML input: {input_name}")
-                sess.predict({input_name: dummy})
-            else:
-                print("[neural] Warning: Could not determine CoreML input name, skipping warmup")
+            # CoreML worker already performed load + first prediction before INIT_OK.
+            print("[neural] CoreML worker warmup already complete.")
         else:
             # ONNX Runtime API
             input_name = sess.get_inputs()[0].name
@@ -279,6 +288,13 @@ async def info() -> dict:
         "input_size": CLIP_SIZE,
         "version": VERSION,
         "providers": ort.get_available_providers(),
+        "engine": "coreml" if USE_COREML else "onnx",
+        "model_path": str(VISUAL_MODEL),
+        "max_batch": MAX_BATCH,
+        "compiled_batch_size": COMPILED_BATCH_SIZE if USE_COREML else None,
+        "preprocess_workers": PREPROCESS_WORKERS,
+        "memory_total_gb": round(mem.total / (1024**3), 1),
+        "memory_available_gb": round(psutil.virtual_memory().available / (1024**3), 1),
     }
 
 
@@ -298,7 +314,7 @@ async def embed(
         raise HTTPException(status_code=422, detail=f"Batch too large (max {MAX_BATCH})")
 
     sess = get_session()
-    
+
     # Read all images first (this is I/O bound, not worth parallelizing)
     image_bytes_list = []
     filenames = []
@@ -306,7 +322,7 @@ async def embed(
         raw = await upload.read()
         image_bytes_list.append(raw)
         filenames.append(upload.filename)
-    
+
     # Preprocess in parallel (decode + resize + normalize)
     t_preprocess_start = time.time()
     futures = [_preprocess_executor.submit(preprocess, raw) for raw in image_bytes_list]
@@ -327,29 +343,32 @@ async def embed(
         t0 = time.time()
         with _inference_lock:
             if USE_COREML:
-                # CoreML inference with dynamically discovered input/output names
-                # Pad incoming batches to compiled batch size
-                input_name = sess._input_names[0] if hasattr(sess, '_input_names') else "pixel_values"
-                output_name = sess._output_names[0] if hasattr(sess, '_output_names') else "image_embeds"
-                
-                if batch_arr.shape[0] < COMPILED_BATCH_SIZE:
-                    # Pad with zero images to match compiled batch size
-                    padding_size = COMPILED_BATCH_SIZE - batch_arr.shape[0]
-                    padding = np.zeros((padding_size, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
-                    batch_arr = np.vstack([batch_arr, padding])
-                
-                print(f"[embed] Using CoreML input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
-                
-                pred = sess.predict({input_name: batch_arr})
-                full_output = pred[output_name]  # (32, 512)
-                output = full_output[:num_real_images]  # Extract only real results (N, 512)
+                # CoreML models are compiled for a fixed micro-batch size. Accept
+                # larger REST batches by running multiple fixed-size chunks.
+                output_chunks = []
+                for start in range(0, num_real_images, COMPILED_BATCH_SIZE):
+                    chunk = batch_arr[start:start + COMPILED_BATCH_SIZE]
+                    real_in_chunk = chunk.shape[0]
+                    if real_in_chunk < COMPILED_BATCH_SIZE:
+                        padding_size = COMPILED_BATCH_SIZE - real_in_chunk
+                        padding = np.zeros((padding_size, 3, CLIP_SIZE, CLIP_SIZE), dtype=np.float32)
+                        chunk = np.vstack([chunk, padding])
+
+                    # print(
+                    #     f"[embed] Using CoreML micro_batch={chunk.shape[0]} "
+                    #     f"for images {start}:{start + real_in_chunk}"
+                    # )
+                    chunk_output = sess.predict(chunk)
+                    output_chunks.append(chunk_output[:real_in_chunk])
+
+                output = np.concatenate(output_chunks, axis=0)
             else:
                 # ONNX Runtime inference (no padding needed)
                 input_name = sess.get_inputs()[0].name
                 output_name = sess.get_outputs()[0].name
                 print(f"[embed] Using ONNX input={input_name}, output={output_name}, batch_size={batch_arr.shape[0]}")
                 output = sess.run([output_name], {input_name: batch_arr})[0]  # (N, 512)
-        
+
         elapsed_ms = (time.time() - t0) * 1000
         engine_label = "CoreML" if USE_COREML else "ONNX"
         print(f"[embed] Preprocessing: {t_preprocess_ms:.1f}ms | {engine_label} inference: {elapsed_ms:.1f}ms | Total for {num_real_images} images")
