@@ -51,7 +51,7 @@ source .venv/bin/activate
 # onnxruntime-silicon uses Apple's ANE/CoreML — much faster than CPU
 pip install fastapi "uvicorn[standard]" onnxruntime-silicon Pillow numpy
 
-python download_model.py --output-dir ./models
+python download_model.py --output-dir ./models --batch-sizes 1,2,4,8,16,32
 MODEL_DIR=./models uvicorn server:app --host 0.0.0.0 --port 8765
 ```
 
@@ -89,9 +89,14 @@ Response:
 
 | Variable     | Default   | Description                              |
 |--------------|-----------|------------------------------------------|
-| `MODEL_DIR`  | `/models` | Directory containing the ONNX model     |
-| `MAX_BATCH`  | `32`      | Maximum images per `/embed` request      |
-| `ORT_THREADS`| `4`       | ONNX Runtime inter-op thread count       |
+| `MODEL_DIR` | `/models` | Directory containing the ONNX/CoreML models |
+| `MAX_BATCH` | `32` | Maximum images per `/embed` REST request |
+| `COMPILED_BATCH_SIZE` | `2` on <12GB, `4` on <16GB, `16` on <32GB, otherwise `32` | Fixed CoreML/ANE micro-batch size; larger REST requests are split internally |
+| `PREPROCESS_WORKERS` | `1` on <16GB, `3` on <32GB, otherwise `4` | Image decode/resize worker count |
+| `FORCE_ONNX` | `0` on macOS with CoreML, otherwise `1` | Force universal ONNX path |
+| `COREML_STARTUP_TIMEOUT` | `60` | Seconds to wait for CoreML load + warmup before fallback |
+| `COREML_PREDICT_TIMEOUT` | `60` | Seconds to wait for each CoreML prediction before killing worker |
+| `ORT_THREADS` | `4` | ONNX Runtime inter-op thread count |
 
 ---
 
@@ -107,9 +112,10 @@ Settings → Similarity if you get too many or too few matches.
 ## OS detection
 
 - Added OS detection (CoreML only on macOS)
-- Auto-enables FORCE_ONNX when:
-- CoreML is not available
-- System has <16 GB RAM
+- Auto-enables FORCE_ONNX when CoreML is not available
+- On low-memory Macs, keeps CoreML enabled but defaults to a smaller `COMPILED_BATCH_SIZE`
+- CoreML worker must load and complete a dummy prediction before startup is considered successful
+- Larger REST batches are split into fixed-size CoreML micro-batches internally
 Respects all env vars:
 - MODEL_DIR
 - FORCE_ONNX
@@ -117,4 +123,23 @@ Respects all env vars:
 - COMPILED_BATCH_SIZE
 - PREPROCESS_WORKERS
 - COREML_COMPUTE_UNITS
-- 
+- COREML_STARTUP_TIMEOUT
+- COREML_PREDICT_TIMEOUT
+
+### CoreML batch sizing
+
+`MAX_BATCH` controls how many images the REST endpoint accepts in one request. `COMPILED_BATCH_SIZE` controls the fixed tensor shape of the ANE model. They do not need to match.
+
+For example, on an 8GB MacBook Air you can accept 23–32 images per request while running ANE in smaller chunks:
+
+```bash
+MODEL_DIR=./models \
+COMPILED_BATCH_SIZE=2 \
+MAX_BATCH=32 \
+PREPROCESS_WORKERS=1 \
+uvicorn server:app --host 0.0.0.0 --port 8765
+```
+
+A 23-image request will be executed as CoreML chunks of `2 + 2 + … + 1`, with the final chunk padded to 2 internally and trimmed back to 23 outputs.
+
+Avoid automatic upward probing on low-memory Macs: if an oversized ANE batch hangs inside CoreML, the operating system may not unwind it cleanly even when the parent process has a timeout. Prefer selecting a conservative `COMPILED_BATCH_SIZE` directly (`2` for 8GB-class Macs, `1` if `2` is unstable).
