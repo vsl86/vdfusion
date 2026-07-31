@@ -188,8 +188,8 @@ func TestTrimTolerantAlignment(t *testing.T) {
 	e := NewComparisonEngine()
 
 	t.Run("phash shifted by trimmed intro", func(t *testing.T) {
-		a := db.FileRecord{PHashV2s: []uint64{1, 2, 3, 4}}
-		b := db.FileRecord{PHashV2s: []uint64{99, 1, 2, 3, 4}}
+		a := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{1, 2, 3, 4})}
+		b := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{99, 1, 2, 3, 4})}
 		if got := e.phashSimilarity(a, b); got != 1.0 {
 			t.Fatalf("phashSimilarity() = %v, want 1", got)
 		}
@@ -200,8 +200,8 @@ func TestTrimTolerantAlignment(t *testing.T) {
 		e2 := []float32{0, 1, 0, 0}
 		e3 := []float32{0, 0, 1, 0}
 		other := []float32{0, 0, 0, 1}
-		a := db.FileRecord{NeuralEmbeddings: [][]float32{e1, e2, e3}}
-		b := db.FileRecord{NeuralEmbeddings: [][]float32{other, e1, e2, e3}}
+		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{e1, e2, e3})}
+		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{other, e1, e2, e3})}
 
 		isDup, score := e.isDuplicate(a, b, config.Settings{Percent: 95})
 		if !isDup {
@@ -211,6 +211,22 @@ func TestTrimTolerantAlignment(t *testing.T) {
 			t.Fatalf("isDuplicate() score = %v, want 1", score)
 		}
 	})
+}
+
+func phashesFromTimeline(timeline []uint64) []uint64 {
+	out := make([]uint64, len(timeline))
+	for chronologicalPos, sampleIndex := range temporalSampleOrder(len(timeline)) {
+		out[sampleIndex] = timeline[chronologicalPos]
+	}
+	return out
+}
+
+func embeddingsFromTimeline(timeline [][]float32) [][]float32 {
+	out := make([][]float32, len(timeline))
+	for chronologicalPos, sampleIndex := range temporalSampleOrder(len(timeline)) {
+		out[sampleIndex] = timeline[chronologicalPos]
+	}
+	return out
 }
 
 func TestPHashHamming(t *testing.T) {

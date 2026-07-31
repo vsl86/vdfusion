@@ -15,6 +15,7 @@ import (
 
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
+	"vdfusion/internal/media"
 	"vdfusion/internal/neural"
 )
 
@@ -442,21 +443,24 @@ func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float6
 		return 0
 	}
 
+	leftOrder := temporalSampleOrder(n)
+	rightOrder := temporalSampleOrder(m)
 	minFrames := min(n, m)
 	minOverlap := max(1, minFrames/2)
 	best := 0.0
 
-	// Offset means j = i + offset. Trying all offsets makes comparison tolerant
-	// of intros/outros/trims shifting sampled frames while preserving order.
+	// Offset is applied after sorting Van der Corput samples by timestamp. The
+	// extraction index order is low-discrepancy, not chronological, so aligning by
+	// raw index would compare unrelated timestamps.
 	for offset := -n + 1; offset <= m-1; offset++ {
 		total := 0.0
 		count := 0
-		for i := 0; i < n; i++ {
-			j := i + offset
-			if j < 0 || j >= m {
+		for li, sourceI := range leftOrder {
+			rj := li + offset
+			if rj < 0 || rj >= m {
 				continue
 			}
-			total += scoreAt(i, j)
+			total += scoreAt(sourceI, rightOrder[rj])
 			count++
 		}
 		if count < minOverlap {
@@ -469,6 +473,17 @@ func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float6
 	}
 
 	return best
+}
+
+func temporalSampleOrder(n int) []int {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		return media.VanDerCorput(order[i]+1) < media.VanDerCorput(order[j]+1)
+	})
+	return order
 }
 
 func phashHamming(a, b uint64) int {
