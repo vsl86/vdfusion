@@ -10,7 +10,7 @@
         <div class="filter-row" style="margin-bottom: 8px;">
           <span>Similarity Threshold</span>
         </div>
-        <SliderFine v-model="settings.percent" :min="50" :max="100" :step="0.1" suffix="%" />
+        <SliderFine v-model="settings.percent" :min="60" :max="100" :step="0.1" suffix="%" />
       </div>
 
       <div style="margin-bottom: 16px;">
@@ -474,7 +474,7 @@ const testConnection = async () => {
     const originalBase = localStorage.getItem('vdf_connection_config');
     localStorage.setItem('vdf_connection_config', JSON.stringify(connectionConfig.value));
 
-    // We can't easily re-init the whole API module without a reload, 
+    // We can't easily re-init the whole API module without a reload,
     // but GetDebugInfo already respects the dynamic base
     const info = await GetDebugInfo(connectionConfig.value.url)
     testResult.value = { success: true, message: `Success! Connected to version ${info.version || 'unknown'}` }

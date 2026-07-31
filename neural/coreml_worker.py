@@ -26,7 +26,7 @@ def _coreml_worker_loop(
 
     print(f"[coreml-worker] Loading CoreML model from {model_path_str}…")
     path = Path(model_path_str)
-    
+
     # Define compute units to try (in order of priority)
     if compute_units is not None:
         compute_units_list = [compute_units]
@@ -36,18 +36,18 @@ def _coreml_worker_loop(
             ct.ComputeUnit.CPU_AND_GPU.value,
             ct.ComputeUnit.CPU_ONLY.value,
         ]
-    
+
     model = None
     output_name = "image_embeds"
     for cu in compute_units_list:
         try:
             print(f"[coreml-worker] Trying with compute units: {ct.ComputeUnit(cu)}")
-            
+
             mem = psutil.virtual_memory()
             print(f"[coreml-worker] System memory: {mem.total / (1024**3):.1f} GB total, {mem.available / (1024**3):.1f} GB available")
-            
+
             print(f"[coreml-worker] Model path exists: {path.exists()}, suffix: {path.suffix}")
-            
+
             if path.suffix == ".mlmodelc":
                 model = CompiledMLModel(str(path), compute_units=ct.ComputeUnit(cu))
                 print("[coreml-worker] Loaded CompiledMLModel")
@@ -56,7 +56,7 @@ def _coreml_worker_loop(
                 print(f"[coreml-worker] Loaded MLModel from {path.suffix}")
                 print(f"[coreml-worker] CoreML model input features: {model.input_description}")
                 print(f"[coreml-worker] CoreML model output features: {model.output_description}")
-                
+
             print(f"[coreml-worker] CoreML model loaded cleanly; warming up with batch size {compiled_batch_size}…")
             dummy = np.zeros((compiled_batch_size, 3, 224, 224), dtype=np.float32)
             warmup_res = model.predict({"pixel_values": dummy})
@@ -68,7 +68,7 @@ def _coreml_worker_loop(
             print(f"[coreml-worker] Failed to load with compute units {ct.ComputeUnit(cu)}: {exc}")
             print(f"[coreml-worker] Traceback: {traceback.format_exc()}")
             continue  # Try next compute unit
-    
+
     if model is None:
         output_queue.put(("INIT_ERROR", "Failed to load CoreML model with all available compute units"))
         return
@@ -81,11 +81,11 @@ def _coreml_worker_loop(
             break
         req_id, batch_arr = item
         try:
-            print(f"[coreml-worker] Received request {req_id} with batch shape: {batch_arr.shape}")
+            # print(f"[coreml-worker] Received request {req_id} with batch shape: {batch_arr.shape}")
             res = model.predict({"pixel_values": batch_arr})
             # CoreML outputs dictionary mapping output feature name -> numpy array
             output_name = "image_embeds" if "image_embeds" in res else list(res.keys())[0]
-            print(f"[coreml-worker] Request {req_id} complete, output shape: {res[output_name].shape}")
+            # print(f"[coreml-worker] Request {req_id} complete, output shape: {res[output_name].shape}")
             output_queue.put((req_id, res[output_name]))
         except Exception as exc:
             print(f"[coreml-worker] Request error: {exc}")
@@ -105,11 +105,11 @@ class CoreMLProcessBridge:
         import sys
         if sys.platform != "darwin":
             raise RuntimeError("CoreML is only available on macOS")
-            
+
         import coremltools as ct
 
         self.model_path = model_path
-        
+
         # Keep CPU_AND_NE (ANE) as default; allow user to override
         if compute_units is None:
             compute_units = ct.ComputeUnit.CPU_AND_NE.value

@@ -184,6 +184,35 @@ func TestIsDuplicate(t *testing.T) {
 	}
 }
 
+func TestTrimTolerantAlignment(t *testing.T) {
+	e := NewComparisonEngine()
+
+	t.Run("phash shifted by trimmed intro", func(t *testing.T) {
+		a := db.FileRecord{PHashV2s: []uint64{1, 2, 3, 4}}
+		b := db.FileRecord{PHashV2s: []uint64{99, 1, 2, 3, 4}}
+		if got := e.phashSimilarity(a, b); got != 1.0 {
+			t.Fatalf("phashSimilarity() = %v, want 1", got)
+		}
+	})
+
+	t.Run("neural shifted by trimmed intro", func(t *testing.T) {
+		e1 := []float32{1, 0, 0, 0}
+		e2 := []float32{0, 1, 0, 0}
+		e3 := []float32{0, 0, 1, 0}
+		other := []float32{0, 0, 0, 1}
+		a := db.FileRecord{NeuralEmbeddings: [][]float32{e1, e2, e3}}
+		b := db.FileRecord{NeuralEmbeddings: [][]float32{other, e1, e2, e3}}
+
+		isDup, score := e.isDuplicate(a, b, config.Settings{Percent: 95})
+		if !isDup {
+			t.Fatalf("isDuplicate() = false, want true; score=%v", score)
+		}
+		if score != 1.0 {
+			t.Fatalf("isDuplicate() score = %v, want 1", score)
+		}
+	})
+}
+
 func TestPHashHamming(t *testing.T) {
 	tests := []struct {
 		name string

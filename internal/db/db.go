@@ -185,6 +185,8 @@ func (d *Database) migrate() error {
 	ensureColumn(d.conn, "files", "neural_v1", "BLOB")
 
 	_, _ = d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(identifier_hash)")
+	_, _ = d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_files_duration ON files(duration)")
+	_, _ = d.conn.Exec("CREATE INDEX IF NOT EXISTS idx_files_path_duration ON files(path, duration)")
 
 	// Backfill missing identifier hashes.
 	var missingCount int
@@ -407,10 +409,10 @@ func (d *Database) loadNeuralEmbeddingsByFileCondition(cond string, args []any) 
 	out := make(map[int64][][]float32)
 	query := fmt.Sprintf(`
 SELECT e.dataset_id, e.embedding
-FROM %s e
-INNER JOIN files f ON e.dataset_id = CAST(f.id AS TEXT)
+FROM files f
+INNER JOIN %s e ON e.dataset_id = CAST(f.id AS TEXT)
 WHERE %s
-ORDER BY e.dataset_id, e.id`,
+ORDER BY f.id, e.id`,
 		embeddingsShadowTable, cond,
 	)
 	rows, err := d.conn.Query(query, args...)
@@ -910,7 +912,7 @@ func (d *Database) queryFilesByPrefixesWithCondition(prefixes []string) ([]FileR
 	}
 	cond := strings.Join(conditions, " OR ")
 
-	query := fmt.Sprintf("SELECT %s FROM files f WHERE %s", fileSelectCols, cond)
+	query := fmt.Sprintf("SELECT %s FROM files f WHERE %s ORDER BY f.duration", fileSelectCols, cond)
 	rows, err := d.conn.Query(query, args...)
 	if err != nil {
 		return nil, "", nil, err
