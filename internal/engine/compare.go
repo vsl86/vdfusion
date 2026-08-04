@@ -19,10 +19,39 @@ import (
 	"vdfusion/internal/neural"
 )
 
-type ComparisonEngine struct{}
+type ComparisonEngine struct {
+	db       *db.Database
+	embCache sync.Map
+}
 
-func NewComparisonEngine() *ComparisonEngine {
-	return &ComparisonEngine{}
+func NewComparisonEngine(d ...*db.Database) *ComparisonEngine {
+	e := &ComparisonEngine{}
+	if len(d) > 0 {
+		e.db = d[0]
+	}
+	return e
+}
+
+func (e *ComparisonEngine) SetDatabase(d *db.Database) {
+	e.db = d
+}
+
+func (e *ComparisonEngine) getOrLoadEmbeddings(r *db.FileRecord) [][]float32 {
+	if len(r.NeuralEmbeddings) > 0 {
+		return r.NeuralEmbeddings
+	}
+	if e.db == nil {
+		return nil
+	}
+	if cached, ok := e.embCache.Load(r.ID); ok {
+		return cached.([][]float32)
+	}
+	embs, err := e.db.GetNeuralEmbeddingsByID(r.ID)
+	if err != nil || len(embs) == 0 {
+		return nil
+	}
+	e.embCache.Store(r.ID, embs)
+	return embs
 }
 
 func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord, ignoredGroups []db.IgnoredGroup, cfg config.Settings, reporter ProgressReporter) []DuplicateGroup {
@@ -400,14 +429,18 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 	// Neural mode: pHash gate first (when hashes exist), then trim-tolerant
 	// cosine similarity. This is tuned for the same underlying video across
 	// quality/scale/trim changes, not broad semantic matching.
-	if len(a.NeuralEmbeddings) > 0 && len(b.NeuralEmbeddings) > 0 {
-		if phashScore > 0 && phashScore < phashNeuralGate {
-			if local != nil {
-				local.neuralGateSkip++
-			}
-			return false, phashScore
+	if phashScore > 0 && phashScore < phashNeuralGate {
+		if local != nil {
+			local.neuralGateSkip++
 		}
-		score, ok := e.neuralSimilarity(a.NeuralEmbeddings, b.NeuralEmbeddings)
+		return false, phashScore
+	}
+
+	aEmbs := e.getOrLoadEmbeddings(&a)
+	bEmbs := e.getOrLoadEmbeddings(&b)
+
+	if len(aEmbs) > 0 && len(bEmbs) > 0 {
+		score, ok := e.neuralSimilarity(aEmbs, bEmbs)
 		if ok {
 			if local != nil {
 				local.neuralComp++

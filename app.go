@@ -81,7 +81,7 @@ func (a *App) BroadcastSystemLog(line string) {
 func NewApp(database *db.Database, sm *config.SettingsManager) *App {
 	reporter := &WailsReporter{}
 	walker := engine.NewWalker(database, nil)
-	compare := engine.NewComparisonEngine()
+	compare := engine.NewComparisonEngine(database)
 	resultsManager := engine.NewResultsManager()
 
 	scanner := engine.NewScanner(walker, database, reporter, compare, resultsManager)

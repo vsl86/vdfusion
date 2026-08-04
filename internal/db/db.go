@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -225,7 +226,9 @@ func ensureColumn(db *sql.DB, tableName, columnName, columnDefinition string) {
 	}
 }
 
-// ensureVectorTables creates the vec virtual table, its shadow store, and
+const centroidShadowTable = "_vec_centroid_embeddings"
+
+// ensureVectorTables creates the vec virtual tables, their shadow stores, and
 // vector_storage used for persisted similarity indexes.
 func (d *Database) ensureVectorTables() error {
 	// Virtual table for MATCH-based similarity (dataset_id + doc_id + match_score).
@@ -247,6 +250,23 @@ CREATE TABLE IF NOT EXISTS %s (
 		return fmt.Errorf("create embeddings shadow table: %w", err)
 	}
 
+	// Virtual table & shadow table for file centroids
+	if _, err := d.conn.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS centroid_embeddings USING vec(doc_id)`); err != nil {
+		return fmt.Errorf("create centroid_embeddings vtab: %w", err)
+	}
+
+	if _, err := d.conn.Exec(fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	dataset_id TEXT NOT NULL,
+	id         TEXT NOT NULL,
+	content    TEXT,
+	meta       TEXT,
+	embedding  BLOB,
+	PRIMARY KEY(dataset_id, id)
+)`, centroidShadowTable)); err != nil {
+		return fmt.Errorf("create centroid shadow table: %w", err)
+	}
+
 	if _, err := d.conn.Exec(`
 CREATE TABLE IF NOT EXISTS vector_storage (
 	shadow_table_name TEXT NOT NULL,
@@ -255,6 +275,10 @@ CREATE TABLE IF NOT EXISTS vector_storage (
 	PRIMARY KEY (shadow_table_name, dataset_id)
 )`); err != nil {
 		return fmt.Errorf("create vector_storage: %w", err)
+	}
+
+	if err := d.backfillCentroids(); err != nil {
+		fmt.Printf("DB Warning: backfill centroids failed: %v\n", err)
 	}
 
 	return nil
@@ -320,8 +344,117 @@ func datasetIDForFile(fileID int64) string {
 	return strconv.FormatInt(fileID, 10)
 }
 
+func ComputeCentroid(vecs [][]float32) []float32 {
+	if len(vecs) == 0 {
+		return nil
+	}
+	dim := len(vecs[0])
+	centroid := make([]float32, dim)
+	for _, v := range vecs {
+		for i := 0; i < dim; i++ {
+			centroid[i] += v[i]
+		}
+	}
+	var norm float64
+	for i := 0; i < dim; i++ {
+		centroid[i] /= float32(len(vecs))
+		norm += float64(centroid[i]) * float64(centroid[i])
+	}
+	norm = math.Sqrt(norm)
+	if norm > 1e-6 {
+		for i := 0; i < dim; i++ {
+			centroid[i] /= float32(norm)
+		}
+	}
+	return centroid
+}
+
+func (d *Database) backfillCentroids() error {
+	var shadowCount int
+	_ = d.conn.QueryRow(fmt.Sprintf("SELECT COUNT(DISTINCT dataset_id) FROM %s", embeddingsShadowTable)).Scan(&shadowCount)
+	var centroidCount int
+	_ = d.conn.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE dataset_id = 'centroids'", centroidShadowTable)).Scan(&centroidCount)
+
+	if shadowCount == 0 || centroidCount >= shadowCount {
+		return nil
+	}
+
+	fmt.Printf("DB: Starting centroid backfill (found %d missing centroids)...\n", shadowCount-centroidCount)
+	rows, err := d.conn.Query(fmt.Sprintf(`
+SELECT dataset_id, embedding 
+FROM %s 
+WHERE dataset_id NOT IN (SELECT id FROM %s WHERE dataset_id = 'centroids')
+ORDER BY dataset_id, id`, embeddingsShadowTable, centroidShadowTable))
+	if err != nil {
+		fmt.Printf("DB Error: backfill query failed: %v\n", err)
+		return fmt.Errorf("backfill query failed: %w", err)
+	}
+	defer rows.Close()
+
+	grouped := make(map[int64][][]float32)
+	for rows.Next() {
+		var dsID string
+		var blob []byte
+		if err := rows.Scan(&dsID, &blob); err != nil {
+			continue
+		}
+		fID, err := strconv.ParseInt(dsID, 10, 64)
+		if err != nil {
+			continue
+		}
+		v, err := vector.DecodeEmbedding(blob)
+		if err != nil {
+			continue
+		}
+		grouped[fID] = append(grouped[fID], v)
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Printf("DB Error: backfill rows iteration failed: %v\n", err)
+		return err
+	}
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(fmt.Sprintf(
+		"INSERT OR REPLACE INTO %s(dataset_id, id, content, meta, embedding) VALUES ('centroids', ?, '', '{}', ?)",
+		centroidShadowTable,
+	))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	count := 0
+	for fID, vecs := range grouped {
+		c := ComputeCentroid(vecs)
+		if len(c) == 0 {
+			continue
+		}
+		cBlob, err := vector.EncodeEmbedding(c)
+		if err != nil {
+			continue
+		}
+		dsID := datasetIDForFile(fID)
+		if _, err := stmt.Exec(dsID, cBlob); err == nil {
+			count++
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		fmt.Printf("DB Error: backfill commit failed: %v\n", err)
+		return fmt.Errorf("backfill commit failed: %w", err)
+	}
+	fmt.Printf("DB: Centroid backfill complete (%d centroids created)\n", count)
+	return nil
+}
+
 // storeNeuralEmbeddingsByID unpacks a PackEmbeddings blob and writes each
-// frame vector into the sqlite-vec shadow table for the given file.
+// frame vector into the sqlite-vec shadow table for the given file, as well
+// as its mean centroid vector.
 func (d *Database) storeNeuralEmbeddingsByID(fileID int64, packed []byte) error {
 	vecs := neural.UnpackEmbeddings(packed)
 	if len(vecs) == 0 {
@@ -359,14 +492,115 @@ func (d *Database) storeNeuralEmbeddingsByID(fileID int64, packed []byte) error 
 		}
 	}
 
+	// Store centroid
+	c := ComputeCentroid(vecs)
+	if len(c) > 0 {
+		cBlob, err := vector.EncodeEmbedding(c)
+		if err == nil {
+			_, _ = tx.Exec(fmt.Sprintf(
+				"INSERT OR REPLACE INTO %s(dataset_id, id, content, meta, embedding) VALUES ('centroids', ?, '', '{}', ?)",
+				centroidShadowTable,
+			), datasetID, cBlob)
+		}
+	}
+
 	return tx.Commit()
 }
 
-// deleteNeuralEmbeddingsByID removes all frame embeddings for a file.
+// deleteNeuralEmbeddingsByID removes all frame embeddings and centroid for a file.
 func (d *Database) deleteNeuralEmbeddingsByID(fileID int64) error {
 	datasetID := datasetIDForFile(fileID)
-	_, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = ?", embeddingsShadowTable), datasetID)
+	if _, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = ?", embeddingsShadowTable), datasetID); err != nil {
+		return err
+	}
+	_, err := d.conn.Exec(fmt.Sprintf("DELETE FROM %s WHERE dataset_id = 'centroids' AND id = ?", centroidShadowTable), datasetID)
 	return err
+}
+
+func (d *Database) LoadNeuralEmbeddingsForFileIDs(ids []int64) (map[int64][][]float32, error) {
+	out := make(map[int64][][]float32, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	const chunkSize = 500
+	for i := 0; i < len(ids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for j, id := range chunk {
+			placeholders[j] = "?"
+			args[j] = datasetIDForFile(id)
+		}
+
+		query := fmt.Sprintf(
+			"SELECT dataset_id, embedding FROM %s WHERE dataset_id IN (%s) ORDER BY dataset_id, id",
+			embeddingsShadowTable, strings.Join(placeholders, ","),
+		)
+
+		rows, err := d.conn.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+
+		for rows.Next() {
+			var datasetID string
+			var blob []byte
+			if err := rows.Scan(&datasetID, &blob); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			fileID, err := strconv.ParseInt(datasetID, 10, 64)
+			if err != nil {
+				continue
+			}
+			v, err := vector.DecodeEmbedding(blob)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[fileID] = append(out[fileID], v)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+
+	return out, nil
+}
+
+func (d *Database) GetAllCentroids() (map[int64][]float32, error) {
+	rows, err := d.conn.Query(fmt.Sprintf("SELECT id, embedding FROM %s WHERE dataset_id = 'centroids'", centroidShadowTable))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := make(map[int64][]float32)
+	for rows.Next() {
+		var docID string
+		var blob []byte
+		if err := rows.Scan(&docID, &blob); err != nil {
+			continue
+		}
+		fileID, err := strconv.ParseInt(docID, 10, 64)
+		if err != nil {
+			continue
+		}
+		v, err := vector.DecodeEmbedding(blob)
+		if err != nil {
+			continue
+		}
+		res[fileID] = v
+	}
+	return res, rows.Err()
 }
 
 func (d *Database) loadNeuralEmbeddingsByID(fileID int64) ([][]float32, error) {
