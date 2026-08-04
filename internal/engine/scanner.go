@@ -41,6 +41,9 @@ type Scanner struct {
 }
 
 func NewScanner(walker *Walker, db *db.Database, reporter ProgressReporter, compare *ComparisonEngine, resultsManager *ResultsManager) *Scanner {
+	if compare != nil && db != nil {
+		compare.SetDatabase(db)
+	}
 	return &Scanner{
 		walker:         walker,
 		db:             db,
@@ -113,7 +116,7 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 			}
 			s.BroadcastLog("info", "Neural backend: connected ✓")
 		}
-		files, err := s.db.GetFilesByPrefixes(paths)
+		files, err := s.db.GetFilesByPrefixesMetadata(paths)
 		if err != nil {
 			log.Printf("Scanner: Failed to load files: %v", err)
 			s.BroadcastProgress(0, 0, "error: "+err.Error(), "", duration, 0)

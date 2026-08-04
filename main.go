@@ -68,7 +68,7 @@ func runServer(database *db.Database, settingsManager *config.SettingsManager) {
 	go hub.Run(ctx)
 
 	walker := engine.NewWalker(database, nil)
-	compare := engine.NewComparisonEngine()
+	compare := engine.NewComparisonEngine(database)
 	resultsManager := engine.NewResultsManager()
 
 	scanner := engine.NewScanner(walker, database, hub, compare, resultsManager)
