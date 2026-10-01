@@ -171,3 +171,16 @@ func TestNeuralClient(t *testing.T) {
 		t.Errorf("unexpected embeddings shape: %v", embs)
 	}
 }
+
+func BenchmarkCosineSimilarity(b *testing.B) {
+	v1 := make([]float32, 512)
+	v2 := make([]float32, 512)
+	for i := range v1 {
+		v1[i] = float32(i) / 512.0
+		v2[i] = float32(512-i) / 512.0
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = CosineSimilarity(v1, v2)
+	}
+}

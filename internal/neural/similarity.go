@@ -14,11 +14,11 @@ import (
 // multiply-adds per clock instead of one. Precision error on 512-dim
 // L2-normalised vectors is ~5e-5, negligible vs any similarity threshold.
 func CosineSimilarity(a, b []float32) float64 {
-	if len(a) == 0 || len(a) != len(b) {
+	n := len(a)
+	if n == 0 || n != len(b) {
 		return 0
 	}
 	var s0, s1, s2, s3 float32
-	n := len(a)
 	i := 0
 	for ; i <= n-4; i += 4 {
 		s0 += a[i] * b[i]
