@@ -424,18 +424,11 @@ func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) 
 
 func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.Settings, local *counters) (bool, float64) {
 	required := cfg.Percent / 100.0
-	phashScore := e.phashSimilarity(a, b)
 
-	// Neural mode: pHash gate first (when hashes exist), then trim-tolerant
-	// cosine similarity. This is tuned for the same underlying video across
-	// quality/scale/trim changes, not broad semantic matching.
-	if phashScore > 0 && phashScore < phashNeuralGate {
-		if local != nil {
-			local.neuralGateSkip++
-		}
-		return false, phashScore
-	}
-
+	// Neural path first: CLIP embeddings encode semantic content, not pixels,
+	// so they are codec/quality-invariant. pHash can score low for the same
+	// video across different codecs or quality levels (e.g. AVI-LQ vs MP4-HQ),
+	// so we must not gate neural comparison on pHash.
 	aEmbs := e.getOrLoadEmbeddings(&a)
 	bEmbs := e.getOrLoadEmbeddings(&b)
 
@@ -451,8 +444,14 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 		}
 	}
 
-	if phashScore == 0 {
-		return false, 0
+	// pHash-only fallback (no embeddings available).
+	// Gate skips pairs that are clearly dissimilar by pixel hash alone.
+	phashScore := e.phashSimilarity(a, b)
+	if phashScore == 0 || phashScore < phashNeuralGate {
+		if local != nil && phashScore > 0 {
+			local.neuralGateSkip++
+		}
+		return false, phashScore
 	}
 	return phashScore >= required, phashScore
 }
