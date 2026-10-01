@@ -57,7 +57,7 @@ func ExtractGray32x32Native(ctx context.Context, filePath string, timestamp floa
 	}
 
 	ts := int64(timestamp * float64(vStream.TimeBase().Den()) / float64(vStream.TimeBase().Num()))
-	if err := fCtx.SeekFrame(vStream.Index(), ts, astiav.NewSeekFlags(astiav.SeekFlagBackward)); err != nil {
+	if err := fCtx.SeekFrame(vStream.Index(), ts, astiav.NewSeekFlags().Add(astiav.SeekFlagBackward)); err != nil {
 	}
 	packet := astiav.AllocPacket()
 	defer packet.Free()
