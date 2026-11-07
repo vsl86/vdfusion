@@ -28,8 +28,8 @@
             <button @click="selectNone">None</button>
             <button @click="selectInvert">Invert</button>
             <hr />
-            <button @click="selectBest">Select Best (Keep largest)</button>
-            <button @click="selectLowest">Select Lowest Quality</button>
+            <button @click="selectBest">Select Best (Largest)</button>
+            <button @click="selectLowest">Select Lowest Quality (Keep largest)</button>
           </div>
         </div>
         <div class="dropdown">

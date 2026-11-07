@@ -22,6 +22,7 @@ export namespace config {
 	    debug_logging: boolean;
 	    neural_backend_enabled: boolean;
 	    neural_backend_url: string;
+	    neural_phash_gate: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -50,6 +51,7 @@ export namespace config {
 	        this.debug_logging = source["debug_logging"];
 	        this.neural_backend_enabled = source["neural_backend_enabled"];
 	        this.neural_backend_url = source["neural_backend_url"];
+	        this.neural_phash_gate = source["neural_phash_gate"];
 	    }
 	}
 

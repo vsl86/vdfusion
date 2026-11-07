@@ -1189,9 +1189,10 @@ func (d *Database) GetStats() (map[string]any, error) {
 	var totalFiles int
 	var totalSize int64
 	var totalDuration float64
+	var maxHashes int
 	var suspiciousCount int
 
-	err := d.conn.QueryRow("SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(SUM(duration), 0.0) FROM files").Scan(&totalFiles, &totalSize, &totalDuration)
+	err := d.conn.QueryRow("SELECT COUNT(*), COALESCE(SUM(size), 0), COALESCE(SUM(duration), 0.0), COALESCE(MAX(LENGTH(phashes))/8, 0) FROM files").Scan(&totalFiles, &totalSize, &totalDuration, &maxHashes)
 	if err != nil {
 		return nil, err
 	}
@@ -1206,6 +1207,7 @@ func (d *Database) GetStats() (map[string]any, error) {
 		"total_size":       totalSize,
 		"total_duration":   totalDuration,
 		"suspicious_count": suspiciousCount,
+		"max_thumbnails":   maxHashes,
 	}, nil
 }
 
