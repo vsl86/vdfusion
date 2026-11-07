@@ -4,6 +4,12 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force full rebuild from source even for a tag'
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -26,7 +32,7 @@ jobs:
   docker-app:
     name: Build & Push App Docker
     runs-on: ${{ vars.RUNNER_LINUX && fromJSON(vars.RUNNER_LINUX) || 'ubuntu-latest' }}
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.force_rebuild)
     permissions:
       contents: read
       packages: write
@@ -84,7 +90,7 @@ jobs:
   docker-neural:
     name: Build & Push Neural Docker
     runs-on: ${{ vars.RUNNER_LINUX && fromJSON(vars.RUNNER_LINUX) || 'ubuntu-latest' }}
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.force_rebuild)
     permissions:
       contents: read
       packages: write
@@ -135,7 +141,7 @@ jobs:
   build:
     name: Build All Artifacts
     runs-on: ${{ vars.RUNNER_MACOS && fromJSON(vars.RUNNER_MACOS) || 'macos-15' }}
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.force_rebuild)
     permissions:
       contents: read
     steps:
@@ -300,12 +306,68 @@ jobs:
             build/bin/*.dmg
             build/bin/*.zip
 
-  # ── 4. GitHub Release (on tag) ────────────────────────────────────────────
+  # ── 4. Map Latest to Tag Release (fast promotion, ~30s) ───────────────────
   release:
-    name: Create GitHub Release
+    name: Map Latest to Tag Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.force_rebuild)
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Download Assets from Latest Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-bins
+          gh release download latest --repo ${{ github.repository }} --dir release-bins
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Map Docker Tags
+        run: |
+          TAG_FULL="${GITHUB_REF_NAME}"
+          TAG_NUMERIC="${TAG_FULL#v}"
+
+          echo "Mapping ghcr.io/${{ github.repository }}:latest to ${TAG_FULL} and ${TAG_NUMERIC}"
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ github.repository }}:${TAG_FULL} \
+            --tag ghcr.io/${{ github.repository }}:${TAG_NUMERIC} \
+            ghcr.io/${{ github.repository }}:latest
+
+          echo "Mapping ghcr.io/${{ github.repository }}-neural:latest to ${TAG_FULL} and ${TAG_NUMERIC}"
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ github.repository }}-neural:${TAG_FULL} \
+            --tag ghcr.io/${{ github.repository }}-neural:${TAG_NUMERIC} \
+            ghcr.io/${{ github.repository }}-neural:latest
+
+      - name: Create Release from Latest Assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: |
+            release-bins/**/*-installer.exe
+            release-bins/**/*.dmg
+            release-bins/**/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 4b. Full Release (only when force_rebuild is manually triggered) ───────
+  full-release:
+    name: Create Full Rebuilt Release
     runs-on: ubuntu-latest
     needs: [docker-app, docker-neural, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'workflow_dispatch' && inputs.force_rebuild
     permissions:
       contents: write
     steps:
@@ -321,6 +383,7 @@ jobs:
           files: |
             release-bins/**/*-installer.exe
             release-bins/**/*.dmg
+            release-bins/**/*.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -346,7 +409,7 @@ jobs:
           tag_name: latest
           target_commitish: main
           name: "latest (unstable)"
-          make_latest: true
+          make_latest: false
           body: |
             This is a floating release containing the latest builds from the `main` branch.
             **Commit:** ${{ github.sha }}
