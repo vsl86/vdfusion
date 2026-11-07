@@ -18,6 +18,8 @@ export function DeleteIgnoredGroup(arg1:number):Promise<void>;
 
 export function DownloadDependencies():Promise<void>;
 
+export function DownloadLocalNeuralModel():Promise<void>;
+
 export function ExcludeGroup(arg1:string,arg2:Array<string>):Promise<void>;
 
 export function ExportDB():Promise<void>;
@@ -27,6 +29,8 @@ export function GetDebugInfo():Promise<Record<string, any>>;
 export function GetDuplicateStats():Promise<main.DuplicateStats>;
 
 export function GetIgnoredGroups():Promise<Array<db.IgnoredGroup>>;
+
+export function GetLocalNeuralStatus():Promise<main.LocalNeuralStatus>;
 
 export function GetResults(arg1:number,arg2:number):Promise<engine.ResultsResponse>;
 
@@ -58,7 +62,11 @@ export function SaveLogToFile(arg1:string):Promise<void>;
 
 export function SaveSettings(arg1:config.Settings):Promise<void>;
 
+export function StartLocalNeuralServer(arg1:boolean,arg2:number):Promise<void>;
+
 export function StartScan(arg1:Array<string>):Promise<void>;
+
+export function StopLocalNeuralServer():Promise<void>;
 
 export function StopScan():Promise<void>;
 

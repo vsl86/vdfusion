@@ -25,7 +25,7 @@ describe('API Service (Wails Mode)', () => {
     beforeEach(() => {
         // Mock window.go to simulate Wails environment
         window.go = { main: { App: {} } };
-        window.runtime = { EventsOn: vi.fn() };
+        window.runtime = { EventsOn: vi.fn(), EventsOnMultiple: vi.fn() };
         vi.resetModules();
     });
 
@@ -86,7 +86,7 @@ describe('API Service (Web Mode)', () => {
 
         await api.StartScan(paths);
         
-        expect(global.fetch).toHaveBeenCalledWith('/api/scan/start', expect.objectContaining({
+        expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/api/scan/start'), expect.objectContaining({
             method: 'POST',
             body: JSON.stringify({ paths })
         }));
@@ -102,7 +102,7 @@ describe('API Service (Web Mode)', () => {
 
         const result = await api.GetSettings();
         
-        expect(global.fetch).toHaveBeenCalledWith('/api/settings');
+        expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/api/settings'));
         expect(result).toEqual(mockSettings);
     });
 });

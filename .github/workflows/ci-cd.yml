@@ -312,6 +312,7 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v7
         with:
+          name: vdfusion-all-platforms
           path: release-bins
 
       - name: Create Release
@@ -336,6 +337,7 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v7
         with:
+          name: vdfusion-all-platforms
           path: release-bins
 
       - name: Create Rolling Release

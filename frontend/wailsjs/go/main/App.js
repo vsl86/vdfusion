@@ -26,6 +26,10 @@ export function DownloadDependencies() {
   return window['go']['main']['App']['DownloadDependencies']();
 }
 
+export function DownloadLocalNeuralModel() {
+  return window['go']['main']['App']['DownloadLocalNeuralModel']();
+}
+
 export function ExcludeGroup(arg1, arg2) {
   return window['go']['main']['App']['ExcludeGroup'](arg1, arg2);
 }
@@ -44,6 +48,10 @@ export function GetDuplicateStats() {
 
 export function GetIgnoredGroups() {
   return window['go']['main']['App']['GetIgnoredGroups']();
+}
+
+export function GetLocalNeuralStatus() {
+  return window['go']['main']['App']['GetLocalNeuralStatus']();
 }
 
 export function GetResults(arg1, arg2) {
@@ -106,8 +114,16 @@ export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
 
+export function StartLocalNeuralServer(arg1, arg2) {
+  return window['go']['main']['App']['StartLocalNeuralServer'](arg1, arg2);
+}
+
 export function StartScan(arg1) {
   return window['go']['main']['App']['StartScan'](arg1);
+}
+
+export function StopLocalNeuralServer() {
+  return window['go']['main']['App']['StopLocalNeuralServer']();
 }
 
 export function StopScan() {

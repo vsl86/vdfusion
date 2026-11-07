@@ -87,16 +87,7 @@ func NewApp(database *db.Database, sm *config.SettingsManager) *App {
 	scanner := engine.NewScanner(walker, database, reporter, compare, resultsManager)
 	walker.SetReporter(scanner)
 
-	// Wire neural client if enabled in settings
-	cfg := sm.Get()
-	log.Printf("NewApp: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", cfg.NeuralBackendEnabled, cfg.NeuralBackendURL)
-	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
-		log.Printf("NewApp: creating neural client for %q", cfg.NeuralBackendURL)
-		client := neural.NewClient(cfg.NeuralBackendURL)
-		scanner.SetNeuralClient(client)
-	}
-
-	return &App{
+	app := &App{
 		db:             database,
 		settings:       sm,
 		compare:        compare,
@@ -104,11 +95,17 @@ func NewApp(database *db.Database, sm *config.SettingsManager) *App {
 		resultsManager: resultsManager,
 		reporter:       reporter,
 	}
+
+	// Wire neural backend if enabled in settings
+	app.syncNeuralBackend(sm.Get())
+
+	return app
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.reporter.ctx = ctx
+	a.syncNeuralBackend(a.settings.Get())
 }
 
 func (a *App) StartScan(paths []string) {
@@ -150,17 +147,101 @@ func (a *App) SaveSettings(cfg config.Settings) error {
 	if err != nil {
 		return err
 	}
-	// Re-wire neural client whenever settings change
-	log.Printf("SaveSettings: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", cfg.NeuralBackendEnabled, cfg.NeuralBackendURL)
-	if cfg.NeuralBackendEnabled && cfg.NeuralBackendURL != "" {
-		log.Printf("SaveSettings: creating neural client for %q", cfg.NeuralBackendURL)
-		client := neural.NewClient(cfg.NeuralBackendURL)
-		a.scanner.SetNeuralClient(client)
-	} else {
-		log.Printf("SaveSettings: disabling neural client")
-		a.scanner.SetNeuralClient(nil)
-	}
+	a.syncNeuralBackend(cfg)
 	return nil
+}
+
+func (a *App) syncNeuralBackend(cfg config.Settings) {
+	port := cfg.LocalNeuralPort
+	if port <= 0 {
+		port = 8765
+	}
+
+	// 1. Manage Apple Silicon CoreML local server
+	if goruntime.GOOS == "darwin" && goruntime.GOARCH == "arm64" {
+		if (cfg.LocalNeuralEngine || cfg.LocalNeuralLANServer) && neural.IsModelDownloaded() {
+			bindHost := "127.0.0.1"
+			if cfg.LocalNeuralLANServer {
+				bindHost = "0.0.0.0"
+			}
+			addr := fmt.Sprintf("%s:%d", bindHost, port)
+			if err := neural.StartServer(addr); err != nil {
+				log.Printf("syncNeuralBackend: StartServer(%s) error: %v", addr, err)
+			} else {
+				log.Printf("syncNeuralBackend: local CoreML server running on %s", addr)
+			}
+		} else if !cfg.LocalNeuralEngine && !cfg.LocalNeuralLANServer {
+			if neural.IsServerRunning() {
+				_ = neural.StopServer()
+			}
+		}
+	}
+
+	// 2. Wire the scanner client
+	if cfg.NeuralBackendEnabled {
+		targetURL := cfg.NeuralBackendURL
+		if cfg.LocalNeuralEngine && (goruntime.GOOS == "darwin" && goruntime.GOARCH == "arm64") {
+			targetURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+		}
+		if targetURL != "" {
+			log.Printf("syncNeuralBackend: creating neural client for %q", targetURL)
+			client := neural.NewClient(targetURL)
+			a.scanner.SetNeuralClient(client)
+			return
+		}
+	}
+
+	log.Printf("syncNeuralBackend: disabling neural client")
+	a.scanner.SetNeuralClient(nil)
+}
+
+type LocalNeuralStatus struct {
+	Supported        bool                    `json:"supported"`
+	ModelDownloaded  bool                    `json:"model_downloaded"`
+	ModelPath        string                  `json:"model_path"`
+	ServerRunning    bool                    `json:"server_running"`
+	ServerAddr       string                  `json:"server_addr"`
+	LocalIPs         []string                `json:"local_ips"`
+	DownloadProgress neural.DownloadProgress `json:"download_progress"`
+}
+
+func (a *App) GetLocalNeuralStatus() LocalNeuralStatus {
+	supported := goruntime.GOOS == "darwin" && goruntime.GOARCH == "arm64"
+	return LocalNeuralStatus{
+		Supported:        supported,
+		ModelDownloaded:  neural.IsModelDownloaded(),
+		ModelPath:        neural.GetModelPath(),
+		ServerRunning:    neural.IsServerRunning(),
+		ServerAddr:       neural.GetServerAddr(),
+		LocalIPs:         neural.GetLocalIPs(),
+		DownloadProgress: neural.GetDownloadProgress(),
+	}
+}
+
+func (a *App) DownloadLocalNeuralModel() error {
+	go func() {
+		_ = neural.DownloadModel(func(p neural.DownloadProgress) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "neural_download_progress", p)
+			}
+		})
+	}()
+	return nil
+}
+
+func (a *App) StartLocalNeuralServer(lan bool, port int) error {
+	if port <= 0 {
+		port = 8765
+	}
+	bindHost := "127.0.0.1"
+	if lan {
+		bindHost = "0.0.0.0"
+	}
+	return neural.StartServer(fmt.Sprintf("%s:%d", bindHost, port))
+}
+
+func (a *App) StopLocalNeuralServer() error {
+	return neural.StopServer()
 }
 
 // TestNeuralBackend pings the neural backend at the given URL and returns

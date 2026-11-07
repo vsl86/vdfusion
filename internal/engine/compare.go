@@ -456,18 +456,125 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 	return phashScore >= required, phashScore
 }
 
+var temporalOrderTable [65][]int
+
+func init() {
+	for n := 1; n <= 64; n++ {
+		order := make([]int, n)
+		for i := range order {
+			order[i] = i
+		}
+		sort.Slice(order, func(i, j int) bool {
+			return media.VanDerCorput(order[i]+1) < media.VanDerCorput(order[j]+1)
+		})
+		temporalOrderTable[n] = order
+	}
+}
+
 func (e *ComparisonEngine) phashSimilarity(a, b db.FileRecord) float64 {
-	return bestTemporalAlignmentScore(len(a.PHashV2s), len(b.PHashV2s), func(i, j int) float64 {
-		dist := phashHamming(a.PHashV2s[i], b.PHashV2s[j])
+	n := len(a.PHashV2s)
+	m := len(b.PHashV2s)
+	if n == 0 || m == 0 {
+		return 0
+	}
+	if n == 1 && m == 1 {
+		dist := phashHamming(a.PHashV2s[0], b.PHashV2s[0])
 		return 1.0 - (float64(dist) / 64.0)
-	})
+	}
+
+	leftOrder := temporalSampleOrder(n)
+	rightOrder := temporalSampleOrder(m)
+	minFrames := min(n, m)
+	minOverlap := max(1, minFrames/2)
+
+	var matrix [16][16]float64
+	maxN := min(n, 16)
+	maxM := min(m, 16)
+	for i := 0; i < maxN; i++ {
+		for j := 0; j < maxM; j++ {
+			dist := phashHamming(a.PHashV2s[i], b.PHashV2s[j])
+			matrix[i][j] = 1.0 - (float64(dist) / 64.0)
+		}
+	}
+
+	best := 0.0
+	for offset := -n + 1; offset <= m-1; offset++ {
+		total := 0.0
+		count := 0
+		for li, sourceI := range leftOrder {
+			rj := li + offset
+			if rj < 0 || rj >= m {
+				continue
+			}
+			if sourceI < 16 && rightOrder[rj] < 16 {
+				total += matrix[sourceI][rightOrder[rj]]
+			} else {
+				dist := phashHamming(a.PHashV2s[sourceI], b.PHashV2s[rightOrder[rj]])
+				total += 1.0 - (float64(dist) / 64.0)
+			}
+			count++
+		}
+		if count < minOverlap {
+			continue
+		}
+		avg := total / float64(count)
+		if avg > best {
+			best = avg
+		}
+	}
+	return best
 }
 
 func (e *ComparisonEngine) neuralSimilarity(a, b [][]float32) (float64, bool) {
-	score := bestTemporalAlignmentScore(len(a), len(b), func(i, j int) float64 {
-		return neural.CosineSimilarity(a[i], b[j])
-	})
-	return score, score != 0
+	n := len(a)
+	m := len(b)
+	if n == 0 || m == 0 {
+		return 0, false
+	}
+	if n == 1 && m == 1 {
+		sim := neural.CosineSimilarity(a[0], b[0])
+		return sim, sim != 0
+	}
+
+	leftOrder := temporalSampleOrder(n)
+	rightOrder := temporalSampleOrder(m)
+	minFrames := min(n, m)
+	minOverlap := max(1, minFrames/2)
+
+	var matrix [16][16]float64
+	maxN := min(n, 16)
+	maxM := min(m, 16)
+	for i := 0; i < maxN; i++ {
+		for j := 0; j < maxM; j++ {
+			matrix[i][j] = neural.CosineSimilarity(a[i], b[j])
+		}
+	}
+
+	best := 0.0
+	for offset := -n + 1; offset <= m-1; offset++ {
+		total := 0.0
+		count := 0
+		for li, sourceI := range leftOrder {
+			rj := li + offset
+			if rj < 0 || rj >= m {
+				continue
+			}
+			if sourceI < 16 && rightOrder[rj] < 16 {
+				total += matrix[sourceI][rightOrder[rj]]
+			} else {
+				total += neural.CosineSimilarity(a[sourceI], b[rightOrder[rj]])
+			}
+			count++
+		}
+		if count < minOverlap {
+			continue
+		}
+		avg := total / float64(count)
+		if avg > best {
+			best = avg
+		}
+	}
+	return best, best != 0
 }
 
 func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float64 {
@@ -508,6 +615,9 @@ func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float6
 }
 
 func temporalSampleOrder(n int) []int {
+	if n > 0 && n <= 64 {
+		return temporalOrderTable[n]
+	}
 	order := make([]int, n)
 	for i := range order {
 		order[i] = i

@@ -83,11 +83,17 @@ func (s *Scanner) Start(ctx context.Context, paths []string, cfg config.Settings
 
 		defer func() {
 			s.mu.Lock()
+			wasStopping := s.stopping
 			s.running = false
 			s.stopping = false
-			s.mu.Unlock()
 			duration := time.Since(startTime).Seconds()
+			cur := s.current
+			tot := s.total
+			s.mu.Unlock()
 			log.Printf("Scanner: Scan finished (duration: %.2fs)", duration)
+			if wasStopping || scanCtx.Err() != nil {
+				s.BroadcastProgress(cur, tot, "stopped", "Scan stopped by user", duration, 0)
+			}
 		}()
 
 		_, err := s.walker.IndexPaths(scanCtx, paths, cfg)

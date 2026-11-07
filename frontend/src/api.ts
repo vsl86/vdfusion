@@ -19,20 +19,27 @@ export interface ConnectionConfig {
 }
 
 export function getConnectionConfig(): ConnectionConfig {
-    const saved = localStorage.getItem('vdf_connection_config');
-    if (saved) {
-        try {
-            return JSON.parse(saved);
-        } catch (e) {
-            console.error('Failed to parse connection config', e);
+    if (typeof localStorage !== 'undefined') {
+        const saved = localStorage.getItem('vdf_connection_config');
+        if (saved) {
+            try {
+                return JSON.parse(saved);
+            } catch (e) {
+                console.error('Failed to parse connection config', e);
+            }
         }
     }
-    return { mode: isWailsApp ? 'local' : 'remote', url: isWailsApp ? '' : `${window.location.protocol}//${window.location.host}` };
+    const hostUrl = typeof window !== 'undefined' && window.location?.host ? `${window.location.protocol}//${window.location.host}` : '';
+    return { mode: isWailsApp ? 'local' : 'remote', url: isWailsApp ? '' : hostUrl };
 }
 
 export function setConnectionConfig(config: ConnectionConfig) {
-    localStorage.setItem('vdf_connection_config', JSON.stringify(config));
-    window.location.reload(); // Re-initialize everything
+    if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('vdf_connection_config', JSON.stringify(config));
+    }
+    if (typeof window !== 'undefined' && window.location?.reload) {
+        window.location.reload(); // Re-initialize everything
+    }
 }
 
 const connConfig = getConnectionConfig();
@@ -267,6 +274,32 @@ export async function TestNeuralBackend(url: string): Promise<any> {
         }
         return r.json();
     });
+}
+
+export async function GetLocalNeuralStatus(): Promise<any> {
+    if (window.go?.main?.App?.GetLocalNeuralStatus) {
+        return window.go.main.App.GetLocalNeuralStatus();
+    }
+    return fetch(`${apiBase}/api/neural/local-status`).then(r => r.json()).catch(() => ({ supported: false }));
+}
+
+export async function DownloadLocalNeuralModel(): Promise<any> {
+    if (window.go?.main?.App?.DownloadLocalNeuralModel) {
+        return window.go.main.App.DownloadLocalNeuralModel();
+    }
+    return fetch(`${apiBase}/api/neural/download`, { method: 'POST' }).then(r => r.json());
+}
+
+export async function StartLocalNeuralServer(lan: boolean, port: number): Promise<any> {
+    if (window.go?.main?.App?.StartLocalNeuralServer) {
+        return window.go.main.App.StartLocalNeuralServer(lan, port);
+    }
+}
+
+export async function StopLocalNeuralServer(): Promise<any> {
+    if (window.go?.main?.App?.StopLocalNeuralServer) {
+        return window.go.main.App.StopLocalNeuralServer();
+    }
 }
 
 export async function GetResults(offset: number = 0, limit: number = 50): Promise<engine.ResultsResponse> {

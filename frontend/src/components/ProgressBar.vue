@@ -68,6 +68,8 @@ const phaseLabel = computed(() => {
   if (phase.value === 'scanning') return '⚙️ Processing files...'
   if (phase.value === 'comparing') return '🍏🍊 Comparing and grouping...'
   if (phase.value === 'completed') return '✅ Scan Complete'
+  if (phase.value === 'stopping') return '⏹️ Stopping scan...'
+  if (phase.value === 'stopped') return '⏹️ Scan Stopped'
   return phase.value || 'Starting...'
 })
 

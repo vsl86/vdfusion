@@ -570,6 +570,8 @@ onMounted(async () => {
         refreshResults(data.duration_seconds || 0)
       }
       fetchStats()
+    } else if (data.phase === 'stopping') {
+      scanning.value = false
     } else {
       scanning.value = true
     }
@@ -694,7 +696,13 @@ const startScan = async () => {
 }
 
 const stopScan = async () => {
-  await StopScan()
+  scanning.value = false
+  scanState.value = { ...scanState.value, phase: 'stopping' }
+  try {
+    await StopScan()
+  } catch (e) {
+    console.error('Failed to stop scan:', e)
+  }
 }
 
 const rescan = async () => {

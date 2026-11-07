@@ -232,20 +232,88 @@
     <div class="card mb-3">
       <div class="card-header">Neural Backend (CLIP Vision)</div>
       <div class="card-body" style="display:block; padding: 16px">
+        <!-- Apple Silicon Native CoreML Section (Visible on Mac ARM64) -->
+        <div v-if="localNeuralStatus.supported" class="local-neural-section" style="margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color, #e2e8f0);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 1.2rem;">🍏</span>
+              <strong>Apple Silicon Neural Engine (CoreML/ANE)</strong>
+            </div>
+            <span v-if="localNeuralStatus.model_downloaded" class="badge" style="background: rgba(16, 185, 129, 0.15); color: #10b981; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500;">Model Ready</span>
+            <span v-else class="badge" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500;">Model Not Downloaded</span>
+          </div>
+
+          <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 12px;">
+            Runs CLIP visual embeddings directly on your Mac's Apple Neural Engine with low memory footprint (~150 MB RAM, batch size 1).
+          </p>
+
+          <!-- Model Download UI if not downloaded -->
+          <div v-if="!localNeuralStatus.model_downloaded" style="margin-top: 10px; padding: 12px; background: rgba(59, 130, 246, 0.05); border: 1px dashed rgba(59, 130, 246, 0.4); border-radius: 6px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <strong>Download Neural Model (~155 MB)</strong>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 2px 0 0 0;">
+                  Downloads <code>clip-vit-b32-visual_fp16_bs1.mlpackage</code> to Application Support
+                </p>
+              </div>
+              <button class="action-btn primary" style="padding: 6px 16px;" @click="startModelDownload" :disabled="downloadingModel">
+                {{ downloadingModel ? 'Downloading...' : 'Download Model' }}
+              </button>
+            </div>
+            <div v-if="downloadingModel" style="margin-top: 10px;">
+              <div style="height: 6px; width: 100%; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
+                <div :style="{ width: `${downloadProgress.percent}%` }" style="height: 100%; background: #3b82f6; transition: width 0.3s ease;"></div>
+              </div>
+              <small style="display: block; margin-top: 4px; color: var(--text-secondary);">
+                {{ downloadProgress.status }} ({{ downloadProgress.percent.toFixed(1) }}%)
+              </small>
+            </div>
+          </div>
+
+          <!-- Native Controls when model downloaded -->
+          <div v-else style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+            <label class="filter-check">
+              <input type="checkbox" v-model="settings.local_neural_engine" @change="onToggleLocalNeural" />
+              Use Apple Silicon Neural Engine for this Mac
+            </label>
+
+            <!-- LAN Sharing option -->
+            <label class="filter-check" style="margin-left: 24px;">
+              <input type="checkbox" v-model="settings.local_neural_lan_server" />
+              Share Neural Engine over Local Network (LAN)
+            </label>
+            <div v-if="settings.local_neural_lan_server" style="margin-left: 48px; padding: 10px; background: rgba(16, 185, 129, 0.08); border-radius: 6px;">
+              <div style="font-size: 0.85rem; font-weight: 500; color: #10b981; margin-bottom: 4px;">
+                LAN Offloading Active
+              </div>
+              <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 8px 0;">
+                Your remote VDFusion instance (NAS, Linux server, CasaOS) can use this Mac's Neural Engine:
+              </p>
+              <div v-for="ip in (localNeuralStatus.local_ips || [])" :key="ip" style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                <code style="background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 4px;">http://{{ ip }}:{{ settings.local_neural_port || 8765 }}</code>
+                <button class="action-btn secondary" style="padding: 2px 8px; font-size: 0.75rem;" @click="copyLanUrl(ip)">
+                  {{ copiedUrl === `http://${ip}:${settings.local_neural_port || 8765}` ? 'Copied!' : 'Copy' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <label class="filter-check">
           <input type="checkbox" v-model="settings.neural_backend_enabled" />
-          Enable Remote Neural Backend
+          Enable Neural Duplicate Matching
         </label>
         <div v-if="settings.neural_backend_enabled" class="impact-preview" style="margin-top: 8px;">
           <span class="impact-icon">🧠</span>
           <div class="impact-content">
             <strong>Neural vision analysis enabled</strong>
-            <p>Duplicate comparison will be offloaded to CLIP ViT-B/32 ONNX backend running on your host.</p>
+            <p v-if="settings.local_neural_engine">Running in-process / on local Apple Silicon Neural Engine (ANE).</p>
+            <p v-else>Duplicate comparison will be offloaded to CLIP ViT-B/32 ONNX backend running on your host or LAN.</p>
           </div>
         </div>
 
         <div v-if="settings.neural_backend_enabled" style="margin-top: 16px; padding-left: 24px">
-          <div class="setting-row">
+          <div class="setting-row" v-if="!settings.local_neural_engine">
             <label>Backend Server URL</label>
             <div style="display: flex; gap: 8px; margin-top: 4px;">
               <input v-model="settings.neural_backend_url" class="remote-url-input" placeholder="http://192.168.1.10:8765" />
@@ -256,6 +324,12 @@
             <small style="display: block; margin-top: 6px; color: var(--text-secondary);">
               Make sure the model service is running on the target port before starting a scan.
             </small>
+          </div>
+          <div class="setting-row" v-else>
+            <label>Backend Status</label>
+            <p style="margin: 4px 0 0 0; font-size: 0.875rem; color: #10b981;">
+              ✓ Using Local Apple Silicon Neural Engine (http://127.0.0.1:{{ settings.local_neural_port || 8765 }})
+            </p>
           </div>
 
           <div v-if="neuralTestResult" class="test-badge" :class="neuralTestResult.success ? 'success' : 'error'">
@@ -388,7 +462,7 @@
 
 <script setup>
 import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
-import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend, GetStats } from '../api'
+import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend, GetStats, GetLocalNeuralStatus, DownloadLocalNeuralModel } from '../api'
 import NumberInput from './NumberInput.vue'
 import SliderFine from './SliderFine.vue'
 import DirPicker from './DirPicker.vue'
@@ -419,13 +493,21 @@ const settings = ref({
   cleanup_orphans: false,
   neural_backend_enabled: false,
   neural_backend_url: 'http://127.0.0.1:8765',
-  neural_phash_gate: 60
+  neural_phash_gate: 60,
+  local_neural_engine: false,
+  local_neural_lan_server: false,
+  local_neural_port: 8765
 })
 
 const baseSettings = ref(null)
 const dbStats = ref(null)
 const saveSuccess = ref(false)
 const dbActionLoading = ref(false)
+
+const localNeuralStatus = ref({ supported: false, model_downloaded: false, server_running: false, local_ips: [] })
+const downloadingModel = ref(false)
+const downloadProgress = ref({ percent: 0, status: '' })
+const copiedUrl = ref('')
 
 const pickerVisible = ref(false)
 const pickerType = ref('include') // 'include' or 'exclude'
@@ -475,6 +557,55 @@ const testNeuralBackendConnection = async () => {
   } finally {
     neuralTestLoading.value = false
   }
+}
+
+const loadLocalNeuralStatus = async () => {
+  try {
+    const st = await GetLocalNeuralStatus()
+    if (st) {
+      localNeuralStatus.value = st
+      if (st.download_progress?.active) {
+        downloadingModel.value = true
+        downloadProgress.value = st.download_progress
+      }
+    }
+  } catch (e) { }
+}
+
+const startModelDownload = async () => {
+  downloadingModel.value = true
+  downloadProgress.value = { percent: 0, status: 'Starting download...' }
+  try {
+    await DownloadLocalNeuralModel()
+    const interval = setInterval(async () => {
+      const st = await GetLocalNeuralStatus()
+      if (st?.download_progress) {
+        downloadProgress.value = st.download_progress
+        if (!st.download_progress.active) {
+          clearInterval(interval)
+          downloadingModel.value = false
+          loadLocalNeuralStatus()
+        }
+      }
+    }, 1000)
+  } catch (e) {
+    downloadingModel.value = false
+    alert(`Download failed: ${e.message}`)
+  }
+}
+
+const onToggleLocalNeural = () => {
+  if (settings.value.local_neural_engine) {
+    settings.value.neural_backend_enabled = true
+    settings.value.neural_backend_url = `http://127.0.0.1:${settings.value.local_neural_port || 8765}`
+  }
+}
+
+const copyLanUrl = (ip) => {
+  const url = `http://${ip}:${settings.value.local_neural_port || 8765}`
+  navigator.clipboard.writeText(url)
+  copiedUrl.value = url
+  setTimeout(() => { copiedUrl.value = '' }, 2000)
 }
 
 const checkUpdates = async () => {
@@ -598,6 +729,16 @@ const newBL = ref('')
 
 onMounted(async () => {
   refresh()
+  loadLocalNeuralStatus()
+  if (window.runtime?.EventsOn) {
+    window.runtime.EventsOn('neural_download_progress', (p) => {
+      downloadProgress.value = p
+      if (p.percent >= 100 || p.status === 'Ready') {
+        downloadingModel.value = false
+        loadLocalNeuralStatus()
+      }
+    })
+  }
   try {
     const info = await GetDebugInfo()
     versionInfo.value = { current: info.version }

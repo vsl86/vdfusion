@@ -37,3 +37,5 @@ node_modules
 frontend/dist
 storage
 neural/__pycache__
+neural/models/
+neural/.python-version

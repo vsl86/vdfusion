@@ -39,6 +39,11 @@ type Settings struct {
 	NeuralBackendEnabled bool    `json:"neural_backend_enabled"`
 	NeuralBackendURL     string  `json:"neural_backend_url"`
 	NeuralPhashGate      float64 `json:"neural_phash_gate"`
+
+	// Apple Silicon / macOS Native CoreML backend
+	LocalNeuralEngine    bool `json:"local_neural_engine"`
+	LocalNeuralLANServer bool `json:"local_neural_lan_server"`
+	LocalNeuralPort      int  `json:"local_neural_port"`
 }
 
 type SettingsManager struct {
@@ -64,6 +69,7 @@ func NewSettingsManager(filePath string) *SettingsManager {
 			CleanupOrphans:            false,
 			NeuralBackendURL:          "http://127.0.0.1:8765",
 			NeuralPhashGate:           60,
+			LocalNeuralPort:           8765,
 		},
 	}
 	sm.Load()
@@ -120,6 +126,7 @@ func (sm *SettingsManager) Reset() error {
 		CleanupOrphans:            false,
 		NeuralBackendURL:          "http://127.0.0.1:8765",
 		NeuralPhashGate:           60,
+		LocalNeuralPort:           8765,
 	}
 	return sm.Update(defaults)
 }

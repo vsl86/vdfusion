@@ -99,6 +99,8 @@ func (s *Server) setupRoutes() {
 		r.Get("/debug", s.handleGetDebugInfo)
 		r.Get("/updates/check", s.handleCheckUpdates)
 		r.Post("/settings/test-neural", s.handleTestNeuralBackend)
+		r.Get("/neural/local-status", s.handleGetLocalNeuralStatus)
+		r.Post("/neural/download", s.handleDownloadNeuralModel)
 	})
 
 	// Static assets (built frontend)
@@ -283,9 +285,22 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Re-wire neural client when settings change
 	log.Printf("handlePutSettings: cfg.NeuralBackendEnabled=%v, cfg.NeuralBackendURL=%q", newSettings.NeuralBackendEnabled, newSettings.NeuralBackendURL)
-	if newSettings.NeuralBackendEnabled && newSettings.NeuralBackendURL != "" {
-		log.Printf("handlePutSettings: creating neural client for %q", newSettings.NeuralBackendURL)
-		client := neural.NewClient(newSettings.NeuralBackendURL)
+	targetURL := newSettings.NeuralBackendURL
+	if newSettings.LocalNeuralEngine && (goruntime.GOOS == "darwin" && goruntime.GOARCH == "arm64") {
+		port := newSettings.LocalNeuralPort
+		if port <= 0 {
+			port = 8765
+		}
+		targetURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+		if newSettings.LocalNeuralLANServer {
+			_ = neural.StartServer(fmt.Sprintf("0.0.0.0:%d", port))
+		} else {
+			_ = neural.StartServer(fmt.Sprintf("127.0.0.1:%d", port))
+		}
+	}
+	if newSettings.NeuralBackendEnabled && targetURL != "" {
+		log.Printf("handlePutSettings: creating neural client for %q", targetURL)
+		client := neural.NewClient(targetURL)
 		s.scanner.SetNeuralClient(client)
 	} else {
 		log.Printf("handlePutSettings: disabling neural client")
@@ -762,4 +777,27 @@ func (s *Server) handleTestNeuralBackend(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(info)
+}
+
+func (s *Server) handleGetLocalNeuralStatus(w http.ResponseWriter, r *http.Request) {
+	supported := goruntime.GOOS == "darwin" && goruntime.GOARCH == "arm64"
+	status := map[string]any{
+		"supported":         supported,
+		"model_downloaded":  neural.IsModelDownloaded(),
+		"model_path":        neural.GetModelPath(),
+		"server_running":    neural.IsServerRunning(),
+		"server_addr":       neural.GetServerAddr(),
+		"local_ips":         neural.GetLocalIPs(),
+		"download_progress": neural.GetDownloadProgress(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+func (s *Server) handleDownloadNeuralModel(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		_ = neural.DownloadModel(nil)
+	}()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"status": "download_started"})
 }

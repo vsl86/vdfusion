@@ -23,6 +23,9 @@ export namespace config {
 	    neural_backend_enabled: boolean;
 	    neural_backend_url: string;
 	    neural_phash_gate: number;
+	    local_neural_engine: boolean;
+	    local_neural_lan_server: boolean;
+	    local_neural_port: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -52,6 +55,9 @@ export namespace config {
 	        this.neural_backend_enabled = source["neural_backend_enabled"];
 	        this.neural_backend_url = source["neural_backend_url"];
 	        this.neural_phash_gate = source["neural_phash_gate"];
+	        this.local_neural_engine = source["local_neural_engine"];
+	        this.local_neural_lan_server = source["local_neural_lan_server"];
+	        this.local_neural_port = source["local_neural_port"];
 	    }
 	}
 
@@ -218,6 +224,48 @@ export namespace main {
 	        this.total_files = source["total_files"];
 	    }
 	}
+	export class LocalNeuralStatus {
+	    supported: boolean;
+	    model_downloaded: boolean;
+	    model_path: string;
+	    server_running: boolean;
+	    server_addr: string;
+	    local_ips: string[];
+	    download_progress: neural.DownloadProgress;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalNeuralStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
+	        this.model_downloaded = source["model_downloaded"];
+	        this.model_path = source["model_path"];
+	        this.server_running = source["server_running"];
+	        this.server_addr = source["server_addr"];
+	        this.local_ips = source["local_ips"];
+	        this.download_progress = this.convertValues(source["download_progress"], neural.DownloadProgress);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class WarningInfo {
 	    message: string;
 	    fix: string;
@@ -285,6 +333,33 @@ export namespace media {
 	        this.ffprobe = source["ffprobe"];
 	        this.ffplay = source["ffplay"];
 	        this.missing = source["missing"];
+	    }
+	}
+
+}
+
+export namespace neural {
+	
+	export class DownloadProgress {
+	    active: boolean;
+	    downloaded: number;
+	    total: number;
+	    percent: number;
+	    status: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadProgress(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.active = source["active"];
+	        this.downloaded = source["downloaded"];
+	        this.total = source["total"];
+	        this.percent = source["percent"];
+	        this.status = source["status"];
+	        this.error = source["error"];
 	    }
 	}
 

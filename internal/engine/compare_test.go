@@ -298,3 +298,20 @@ func TestPHashHamming(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkNeuralSimilarity(b *testing.B) {
+	e := NewComparisonEngine()
+	vecA := make([][]float32, 4)
+	vecB := make([][]float32, 4)
+	for i := range 4 {
+		vecA[i] = make([]float32, 512)
+		vecB[i] = make([]float32, 512)
+		vecA[i][0] = 1.0
+		vecB[i][0] = 0.9
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		e.neuralSimilarity(vecA, vecB)
+	}
+}
