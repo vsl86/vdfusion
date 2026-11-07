@@ -261,6 +261,41 @@
           <div v-if="neuralTestResult" class="test-badge" :class="neuralTestResult.success ? 'success' : 'error'">
             {{ neuralTestResult.message }}
           </div>
+
+          <div class="setting-row" style="margin-top: 20px;">
+            <div class="filter-row" style="margin-top: 0; margin-bottom: 8px;">
+              <span style="font-weight: 500;">pHash Pre-Filter Gate</span>
+            </div>
+            <SliderFine v-model="settings.neural_phash_gate" :min="0" :max="90" :step="1" :decimals="0" suffix="%" />
+            <small style="display: block; margin-top: 6px; color: var(--text-secondary);">
+              Minimum pHash similarity required before running deep neural comparison (default 60%).
+            </small>
+
+            <!-- Gate Disclaimers -->
+            <div v-if="settings.neural_phash_gate === 0" class="impact-preview warning" style="margin-top: 10px;">
+              <span class="impact-icon">⚠️</span>
+              <div class="impact-content">
+                <strong>Gate Disabled (0%) — Scan Performance Impact</strong>
+                <p>All video pairs with matching durations will be evaluated using neural embeddings. Recommended for discovering heavily altered, cropped, or cross-format duplicates (e.g. WMV/AVI/MPEG vs MP4), but comparison time will be significantly higher on large libraries.</p>
+              </div>
+            </div>
+
+            <div v-else-if="settings.neural_phash_gate < 50" class="impact-preview warning" style="margin-top: 10px;">
+              <span class="impact-icon">⚡</span>
+              <div class="impact-content">
+                <strong>Aggressive Neural Matching ({{ settings.neural_phash_gate }}%)</strong>
+                <p>Pairs with low perceptual hash similarity will still proceed to neural vision analysis. This helps catch transcoded, letterboxed, or cross-format duplicates, with moderate impact on comparison phase duration.</p>
+              </div>
+            </div>
+
+            <div v-else class="impact-preview" style="margin-top: 10px;">
+              <span class="impact-icon">ℹ️</span>
+              <div class="impact-content">
+                <strong>Pre-Filter Disclaimer</strong>
+                <p>pHash acts as an early-rejection gate to maximize scan speed. If set high, video pairs with compression artifacts, non-square pixel aspect ratios, or format conversions (e.g. WMV vs MP4) may be dropped before neural comparison evaluates them.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -353,7 +388,7 @@
 
 <script setup>
 import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
-import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend } from '../api'
+import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend, GetStats } from '../api'
 import NumberInput from './NumberInput.vue'
 import SliderFine from './SliderFine.vue'
 import DirPicker from './DirPicker.vue'
@@ -383,10 +418,12 @@ const settings = ref({
   maximum_file_size: 0,
   cleanup_orphans: false,
   neural_backend_enabled: false,
-  neural_backend_url: 'http://127.0.0.1:8765'
+  neural_backend_url: 'http://127.0.0.1:8765',
+  neural_phash_gate: 60
 })
 
 const baseSettings = ref(null)
+const dbStats = ref(null)
 const saveSuccess = ref(false)
 const dbActionLoading = ref(false)
 
@@ -503,6 +540,31 @@ const scanImpact = computed(() => {
 
   const oldVal = baseSettings.value.thumbnails
   const newVal = settings.value.thumbnails
+  const totalFiles = dbStats.value?.total_files ?? 0
+  const maxInDb = dbStats.value?.max_thumbnails ?? 0
+
+  if (totalFiles > 0 && maxInDb > 0) {
+    if (newVal > maxInDb) {
+      return {
+        level: 'upgrade',
+        icon: '⚡',
+        title: 'Partial Rescan (Incremental)',
+        message: `Only ${newVal - maxInDb} new frame(s) will be extracted per file. Existing ${maxInDb} hashes will be reused. UI will be capped at 7 frames.`
+      }
+    } else {
+      return {
+        level: 'recalc',
+        icon: '✨',
+        title: 'Instant Recalculation',
+        message: `No new extraction needed. Will instantly reuse the first ${newVal} existing hashes.`
+      }
+    }
+  }
+
+  // If DB has no indexed files yet, there are no existing hashes to recalculate or partially rescan
+  if (totalFiles === 0 && dbStats.value !== null) {
+    return null
+  }
 
   if (newVal > oldVal) {
     return {
@@ -544,10 +606,17 @@ onMounted(async () => {
 
 const refresh = async () => {
   try {
-    const s = await GetSettings()
+    const [s, stats] = await Promise.all([
+      GetSettings(),
+      GetStats().catch(() => null)
+    ])
     if (s) {
+      if (s.neural_phash_gate === undefined) s.neural_phash_gate = 60
       settings.value = s
       baseSettings.value = JSON.parse(JSON.stringify(s))
+    }
+    if (stats) {
+      dbStats.value = stats
     }
   } catch (e) { console.error('Error loading settings', e) }
 }
@@ -584,6 +653,10 @@ const save = async () => {
     await SaveSettings(settings.value)
     baseSettings.value = JSON.parse(JSON.stringify(settings.value))
     saveSuccess.value = true
+    try {
+      const stats = await GetStats()
+      if (stats) dbStats.value = stats
+    } catch (e) {}
     setTimeout(() => {
       saveSuccess.value = false
     }, 2000)
@@ -623,6 +696,7 @@ const resetDB = async () => {
     dbActionLoading.value = true
     try {
       await ResetDB()
+      await refresh()
       showModal({ title: 'Reset Successful', message: 'Database has been cleared.', type: 'alert' })
     } catch (e) {
       showModal({ title: 'Reset Failed', message: String(e), type: 'alert' })
@@ -635,6 +709,7 @@ const cleanupDB = async () => {
   dbActionLoading.value = true
   try {
     const res = await CleanupDB()
+    await refresh()
     showModal({
       title: 'Cleanup Complete',
       message: `${res.removed_count} orphaned entries removed from the database.`,

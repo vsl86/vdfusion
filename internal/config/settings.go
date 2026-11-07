@@ -36,8 +36,9 @@ type Settings struct {
 	DebugLogging bool `json:"debug_logging"`
 
 	// Neural backend — remote CLIP ViT-B/32 ONNX service
-	NeuralBackendEnabled bool   `json:"neural_backend_enabled"`
-	NeuralBackendURL     string `json:"neural_backend_url"`
+	NeuralBackendEnabled bool    `json:"neural_backend_enabled"`
+	NeuralBackendURL     string  `json:"neural_backend_url"`
+	NeuralPhashGate      float64 `json:"neural_phash_gate"`
 }
 
 type SettingsManager struct {
@@ -62,6 +63,7 @@ func NewSettingsManager(filePath string) *SettingsManager {
 			ShowThumbnails:            true,
 			CleanupOrphans:            false,
 			NeuralBackendURL:          "http://127.0.0.1:8765",
+			NeuralPhashGate:           60,
 		},
 	}
 	sm.Load()
@@ -117,6 +119,7 @@ func (sm *SettingsManager) Reset() error {
 		ShowThumbnails:            true,
 		CleanupOrphans:            false,
 		NeuralBackendURL:          "http://127.0.0.1:8765",
+		NeuralPhashGate:           60,
 	}
 	return sm.Update(defaults)
 }

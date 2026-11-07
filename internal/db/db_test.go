@@ -357,3 +357,44 @@ func TestResetClearsEmbeddings(t *testing.T) {
 		t.Fatalf("files remain after Reset: %d", n)
 	}
 }
+
+func TestGetStatsMaxThumbnails(t *testing.T) {
+	d := openTestDB(t)
+
+	// Initially empty
+	stats, err := d.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if maxT, ok := stats["max_thumbnails"].(int); !ok || maxT != 0 {
+		t.Fatalf("expected max_thumbnails = 0 on empty db, got %v", stats["max_thumbnails"])
+	}
+
+	// Insert file with 4 hashes
+	hashes4 := make([]uint64, 4)
+	if err := d.UpsertFile("/a.mp4", 100, 1, 10.0, 1920, 1080, hashes4, "h264", 1000, 30.0, nil); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	stats, err = d.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if maxT, ok := stats["max_thumbnails"].(int); !ok || maxT != 4 {
+		t.Fatalf("expected max_thumbnails = 4, got %v", stats["max_thumbnails"])
+	}
+
+	// Insert another file with 21 hashes
+	hashes21 := make([]uint64, 21)
+	if err := d.UpsertFile("/b.mp4", 200, 1, 10.0, 1920, 1080, hashes21, "h264", 1000, 30.0, nil); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	stats, err = d.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if maxT, ok := stats["max_thumbnails"].(int); !ok || maxT != 21 {
+		t.Fatalf("expected max_thumbnails = 21, got %v", stats["max_thumbnails"])
+	}
+}

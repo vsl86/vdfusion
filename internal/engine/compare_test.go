@@ -165,7 +165,7 @@ func TestIsDuplicate(t *testing.T) {
 				PHashV2s:         []uint64{(1 << 39) - 1},
 				NeuralEmbeddings: testVec2,
 			},
-			settings: config.Settings{Percent: 90},
+			settings: config.Settings{Percent: 90, NeuralPhashGate: 60},
 			wantIs:   false,
 		},
 	}
@@ -209,6 +209,55 @@ func TestTrimTolerantAlignment(t *testing.T) {
 		}
 		if score != 1.0 {
 			t.Fatalf("isDuplicate() score = %v, want 1", score)
+		}
+	})
+
+	t.Run("Configurable NeuralPhashGate threshold", func(t *testing.T) {
+		e := NewComparisonEngine()
+		e1 := []float32{1, 0, 0, 0}
+		// Identical embeddings (score = 1.0)
+		a := db.FileRecord{
+			// Low pHash similarity (~50%)
+			PHashV2s:         []uint64{0x0000000000000000},
+			NeuralEmbeddings: [][]float32{e1},
+		}
+		b := db.FileRecord{
+			// 32 bits different out of 64 -> dist 32 -> score = 1 - 32/64 = 0.50
+			PHashV2s:         []uint64{0x00000000FFFFFFFF},
+			NeuralEmbeddings: [][]float32{e1},
+		}
+
+		// Case 1: Default gate at 60% -> 0.50 < 0.60 -> skipped by gate
+		local := &counters{}
+		isDup, _ := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 60}, local)
+		if isDup {
+			t.Fatalf("expected isDup=false when phash < gate")
+		}
+		if local.neuralGateSkip != 1 {
+			t.Fatalf("expected neuralGateSkip=1, got %d", local.neuralGateSkip)
+		}
+
+		// Case 2: Lowered gate at 40% -> 0.50 >= 0.40 -> passes gate and matches via neural
+		local2 := &counters{}
+		isDup2, score2 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 40}, local2)
+		if !isDup2 {
+			t.Fatalf("expected isDup=true when phash >= gate, got false with score=%v", score2)
+		}
+		if local2.neuralGateSkip != 0 {
+			t.Fatalf("expected neuralGateSkip=0, got %d", local2.neuralGateSkip)
+		}
+		if local2.neuralComp != 1 {
+			t.Fatalf("expected neuralComp=1, got %d", local2.neuralComp)
+		}
+
+		// Case 3: Gate disabled at 0% -> passes gate and matches via neural
+		local3 := &counters{}
+		isDup3, score3 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 0}, local3)
+		if !isDup3 {
+			t.Fatalf("expected isDup=true when gate is 0, got false with score=%v", score3)
+		}
+		if local3.neuralGateSkip != 0 {
+			t.Fatalf("expected neuralGateSkip=0, got %d", local3.neuralGateSkip)
 		}
 	})
 }

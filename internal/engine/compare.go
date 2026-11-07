@@ -416,8 +416,6 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 	return tolerance
 }
 
-const phashNeuralGate = 0.6
-
 func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
 	return e.isDuplicateWithStats(a, b, cfg, nil)
 }
@@ -429,7 +427,8 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 	// Neural mode: pHash gate first (when hashes exist), then trim-tolerant
 	// cosine similarity. This is tuned for the same underlying video across
 	// quality/scale/trim changes, not broad semantic matching.
-	if phashScore > 0 && phashScore < phashNeuralGate {
+	gate := cfg.NeuralPhashGate / 100.0
+	if gate > 0 && phashScore > 0 && phashScore < gate {
 		if local != nil {
 			local.neuralGateSkip++
 		}
