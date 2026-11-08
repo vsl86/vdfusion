@@ -409,7 +409,7 @@ jobs:
           tag_name: latest
           target_commitish: main
           name: "latest (unstable)"
-          make_latest: false
+          make_latest: true
           body: |
             This is a floating release containing the latest builds from the `main` branch.
             **Commit:** ${{ github.sha }}
