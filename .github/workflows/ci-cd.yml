@@ -322,8 +322,8 @@ jobs:
           mkdir -p release-bins
           gh release download latest --repo ${{ github.repository }} --dir release-bins
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
 
       - name: Login to GHCR
         uses: docker/login-action@v4
@@ -332,22 +332,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Map Docker Tags
+      - name: Map Docker Tags and inject version
         run: |
           TAG_FULL="${GITHUB_REF_NAME}"
           TAG_NUMERIC="${TAG_FULL#v}"
+          REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          echo "Mapping ghcr.io/${{ github.repository }}:latest to ${TAG_FULL} and ${TAG_NUMERIC}"
-          docker buildx imagetools create \
-            --tag ghcr.io/${{ github.repository }}:${TAG_FULL} \
-            --tag ghcr.io/${{ github.repository }}:${TAG_NUMERIC} \
-            ghcr.io/${{ github.repository }}:latest
+          echo "=== App image: inject APP_VERSION=${TAG_FULL} then tag ==="
+          # crane mutate adds/overrides an env var in the image config layer —
+          # no layer rebuild, just a new manifest with updated config JSON.
+          crane mutate \
+            --env "APP_VERSION=${TAG_FULL}" \
+            --tag "ghcr.io/${REPO_LC}:${TAG_FULL}" \
+            --tag "ghcr.io/${REPO_LC}:${TAG_NUMERIC}" \
+            "ghcr.io/${REPO_LC}:latest"
 
-          echo "Mapping ghcr.io/${{ github.repository }}-neural:latest to ${TAG_FULL} and ${TAG_NUMERIC}"
-          docker buildx imagetools create \
-            --tag ghcr.io/${{ github.repository }}-neural:${TAG_FULL} \
-            --tag ghcr.io/${{ github.repository }}-neural:${TAG_NUMERIC} \
-            ghcr.io/${{ github.repository }}-neural:latest
+          echo "=== Neural image: tag only (no version injection needed) ==="
+          crane tag "ghcr.io/${REPO_LC}-neural:latest" "${TAG_FULL}"
+          crane tag "ghcr.io/${REPO_LC}-neural:latest" "${TAG_NUMERIC}"
 
       - name: Create Release from Latest Assets
         uses: softprops/action-gh-release@v3

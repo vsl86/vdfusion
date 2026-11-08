@@ -27,6 +27,9 @@ COPY --from=go-builder /app/vdfusion /usr/local/bin/vdfusion
 RUN mkdir -p /app/storage
 ENV VDF_DB_PATH=/app/storage/vdfusion.db
 ENV VDF_SERVER_ADDR=:8080
+# APP_VERSION / APP_COMMIT can be set at runtime to override the version
+# embedded at build time (e.g. when promoting a 'latest' image to a tag).
+ENV APP_VERSION=
 EXPOSE 8080
 # Run in server mode by default
 CMD ["vdfusion", "--server"]
