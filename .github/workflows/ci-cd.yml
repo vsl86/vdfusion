@@ -306,24 +306,32 @@ jobs:
             build/bin/*.dmg
             build/bin/*.zip
 
-  # ── 4. Map Latest to Tag Release (fast promotion, ~30s) ───────────────────
+  # ── 4. Tag Release — rebuild Docker with correct version, reuse desktop bins ─
   release:
-    name: Map Latest to Tag Release
-    runs-on: ubuntu-latest
+    name: Tag Release
+    runs-on: ${{ vars.RUNNER_LINUX && fromJSON(vars.RUNNER_LINUX) || 'ubuntu-latest' }}
     if: startsWith(github.ref, 'refs/tags/v') && !(github.event_name == 'workflow_dispatch' && inputs.force_rebuild)
     permissions:
       contents: write
       packages: write
     steps:
-      - name: Download Assets from Latest Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p release-bins
-          gh release download latest --repo ${{ github.repository }} --dir release-bins
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Install crane
-        uses: imjasonh/setup-crane@v0.4
+      - name: Set version info
+        id: ver
+        run: |
+          TAG_FULL="${GITHUB_REF_NAME}"
+          echo "tag_full=${TAG_FULL}"        >> $GITHUB_OUTPUT
+          echo "tag_numeric=${TAG_FULL#v}"   >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
         uses: docker/login-action@v4
@@ -332,26 +340,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Map Docker Tags and inject version
+      - name: Rebuild App Docker with tag version
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          # Pull layers from the latest image as cache — only the Go binary
+          # layer differs (new VERSION ldflags), so this completes in ~2-3 min.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:latest
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.tag_full }}
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.tag_numeric }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.tag_full }}
+            COMMIT=${{ github.sha }}
+
+      - name: Re-tag Neural Docker image
         run: |
-          TAG_FULL="${GITHUB_REF_NAME}"
-          TAG_NUMERIC="${TAG_FULL#v}"
+          TAG_FULL="${{ steps.ver.outputs.tag_full }}"
+          TAG_NUMERIC="${{ steps.ver.outputs.tag_numeric }}"
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          # Neural image has no version string; just re-tag from latest.
+          docker buildx imagetools create \
+            --tag "ghcr.io/${REPO_LC}-neural:${TAG_FULL}" \
+            --tag "ghcr.io/${REPO_LC}-neural:${TAG_NUMERIC}" \
+            "ghcr.io/${REPO_LC}-neural:latest"
 
-          echo "=== App image: inject APP_VERSION=${TAG_FULL} then tag ==="
-          # crane mutate adds/overrides an env var in the image config layer —
-          # no layer rebuild, just a new manifest with updated config JSON.
-          crane mutate \
-            --env "APP_VERSION=${TAG_FULL}" \
-            --tag "ghcr.io/${REPO_LC}:${TAG_FULL}" \
-            --tag "ghcr.io/${REPO_LC}:${TAG_NUMERIC}" \
-            "ghcr.io/${REPO_LC}:latest"
+      - name: Download Desktop Binaries from Latest Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-bins
+          gh release download latest --repo ${{ github.repository }} --dir release-bins
 
-          echo "=== Neural image: tag only (no version injection needed) ==="
-          crane tag "ghcr.io/${REPO_LC}-neural:latest" "${TAG_FULL}"
-          crane tag "ghcr.io/${REPO_LC}-neural:latest" "${TAG_NUMERIC}"
-
-      - name: Create Release from Latest Assets
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
