@@ -301,9 +301,9 @@ func TestPHashHamming(t *testing.T) {
 
 func BenchmarkNeuralSimilarity(b *testing.B) {
 	e := NewComparisonEngine()
-	vecA := make([][]float32, 4)
-	vecB := make([][]float32, 4)
-	for i := range 4 {
+	vecA := make([][]float32, 16)
+	vecB := make([][]float32, 16)
+	for i := range 16 {
 		vecA[i] = make([]float32, 512)
 		vecB[i] = make([]float32, 512)
 		vecA[i][0] = 1.0
@@ -313,5 +313,26 @@ func BenchmarkNeuralSimilarity(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		e.neuralSimilarity(vecA, vecB)
+	}
+}
+
+func BenchmarkPairComparisonWithMeanEarlyExit(b *testing.B) {
+	e := NewComparisonEngine()
+	vecA := make([][]float32, 16)
+	vecB := make([][]float32, 16)
+	for i := range 16 {
+		vecA[i] = make([]float32, 512)
+		vecB[i] = make([]float32, 512)
+		vecA[i][0] = 1.0
+		vecB[i][1] = 1.0 // orthogonal non-duplicate vectors
+	}
+	recA := db.FileRecord{ID: 1, Duration: 100, NeuralEmbeddings: vecA, PHashV2s: []uint64{0x12345678}}
+	recB := db.FileRecord{ID: 2, Duration: 100, NeuralEmbeddings: vecB, PHashV2s: []uint64{0x12345678}}
+	cfg := config.Settings{Percent: 96, NeuralPhashGate: 40}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		e.isDuplicate(recA, recB, cfg)
 	}
 }

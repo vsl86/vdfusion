@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"math/bits"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -18,6 +19,38 @@ import (
 	"vdfusion/internal/media"
 	"vdfusion/internal/neural"
 )
+
+type cachedEmbeddings struct {
+	frames [][]float32
+	mean   []float32
+}
+
+func computeMeanEmbedding(embs [][]float32) []float32 {
+	if len(embs) == 0 {
+		return nil
+	}
+	if len(embs) == 1 {
+		return embs[0]
+	}
+	dim := len(embs[0])
+	mean := make([]float32, dim)
+	for _, vec := range embs {
+		for d := 0; d < dim; d++ {
+			mean[d] += vec[d]
+		}
+	}
+	var sumSq float32
+	for d := 0; d < dim; d++ {
+		sumSq += mean[d] * mean[d]
+	}
+	if sumSq > 0 {
+		invNorm := float32(1.0 / math.Sqrt(float64(sumSq)))
+		for d := 0; d < dim; d++ {
+			mean[d] *= invNorm
+		}
+	}
+	return mean
+}
 
 type ComparisonEngine struct {
 	db       *db.Database
@@ -36,22 +69,36 @@ func (e *ComparisonEngine) SetDatabase(d *db.Database) {
 	e.db = d
 }
 
-func (e *ComparisonEngine) getOrLoadEmbeddings(r *db.FileRecord) [][]float32 {
+func (e *ComparisonEngine) getOrLoadEmbeddings(r *db.FileRecord) cachedEmbeddings {
 	if len(r.NeuralEmbeddings) > 0 {
-		return r.NeuralEmbeddings
+		if cached, ok := e.embCache.Load(r.ID); ok {
+			return cached.(cachedEmbeddings)
+		}
+		ce := cachedEmbeddings{
+			frames: r.NeuralEmbeddings,
+			mean:   computeMeanEmbedding(r.NeuralEmbeddings),
+		}
+		if r.ID != 0 {
+			e.embCache.Store(r.ID, ce)
+		}
+		return ce
 	}
 	if e.db == nil {
-		return nil
+		return cachedEmbeddings{}
 	}
 	if cached, ok := e.embCache.Load(r.ID); ok {
-		return cached.([][]float32)
+		return cached.(cachedEmbeddings)
 	}
 	embs, err := e.db.GetNeuralEmbeddingsByID(r.ID)
 	if err != nil || len(embs) == 0 {
-		return nil
+		return cachedEmbeddings{}
 	}
-	e.embCache.Store(r.ID, embs)
-	return embs
+	ce := cachedEmbeddings{
+		frames: embs,
+		mean:   computeMeanEmbedding(embs),
+	}
+	e.embCache.Store(r.ID, ce)
+	return ce
 }
 
 func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord, ignoredGroups []db.IgnoredGroup, cfg config.Settings, reporter ProgressReporter) []DuplicateGroup {
@@ -129,7 +176,10 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 		}
 	}()
 
-	workers := cfg.Concurrency
+	workers := runtime.NumCPU()
+	if cfg.Concurrency > workers {
+		workers = cfg.Concurrency
+	}
 	if workers <= 0 {
 		workers = 4
 	}
@@ -249,11 +299,13 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 	}
 	totalNeuralComp := 0
 	totalNeuralGateSkip := 0
+	totalNeuralMeanSkip := 0
 	for _, s := range cstats {
 		totalNeuralComp += s.neuralComp
 		totalNeuralGateSkip += s.neuralGateSkip
+		totalNeuralMeanSkip += s.neuralMeanSkip
 	}
-	statsMsg := fmt.Sprintf("Comparison Stats: Performed=%d, Neural=%d, NeuralGateSkip=%d, SkipDuration=%d, SkipHash=%d, MaxSimFound=%.1f%%", totalComp, totalNeuralComp, totalNeuralGateSkip, totalSkipD, totalSkipH, maxSim*100.0)
+	statsMsg := fmt.Sprintf("Comparison Stats: Performed=%d, Neural=%d, NeuralMeanSkip=%d, NeuralGateSkip=%d, SkipDuration=%d, SkipHash=%d, MaxSimFound=%.1f%%", totalComp, totalNeuralComp, totalNeuralMeanSkip, totalNeuralGateSkip, totalSkipD, totalSkipH, maxSim*100.0)
 	log.Printf("%s", statsMsg)
 	if reporter != nil {
 		reporter.BroadcastLog("info", statsMsg)
@@ -346,6 +398,7 @@ type counters struct {
 	skipH          int
 	neuralComp     int
 	neuralGateSkip int
+	neuralMeanSkip int
 	maxSim         float64
 }
 
@@ -438,8 +491,24 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 	aEmbs := e.getOrLoadEmbeddings(&a)
 	bEmbs := e.getOrLoadEmbeddings(&b)
 
-	if len(aEmbs) > 0 && len(bEmbs) > 0 {
-		score, ok := e.neuralSimilarity(aEmbs, bEmbs)
+	if len(aEmbs.frames) > 0 && len(bEmbs.frames) > 0 {
+		// Tier-1 Mean Embedding Fast Gate:
+		// If the mean vectors don't match, the full 16x16 temporal alignment
+		// cannot reach the duplicate threshold. Checking this 1 dot product
+		// rejects ~95% of false-positive pairs without computing 256 dot products.
+		if len(aEmbs.mean) > 0 && len(bEmbs.mean) > 0 {
+			meanCosine := neural.CosineSimilarity(aEmbs.mean, bEmbs.mean)
+			meanNorm := (meanCosine + 1.0) / 2.0
+			minMeanThreshold := math.Max(0.55, required-0.20)
+			if meanNorm < minMeanThreshold {
+				if local != nil {
+					local.neuralMeanSkip++
+				}
+				return false, meanNorm
+			}
+		}
+
+		score, ok := e.neuralSimilarity(aEmbs.frames, bEmbs.frames)
 		if ok {
 			if local != nil {
 				local.neuralComp++

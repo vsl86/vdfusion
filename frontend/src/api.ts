@@ -144,12 +144,25 @@ function getWsUrl(config: any) {
 
 if (!isWails) {
     const wsUrl = getWsUrl(connConfig);
+    let lastMsgTime = Date.now();
 
     const connectWS = () => {
         if (!wsUrl || wsUrl === '/ws') return;
         try {
+            if (ws) {
+                try {
+                    ws.onclose = null;
+                    ws.onerror = null;
+                    ws.onmessage = null;
+                    ws.close();
+                } catch (_) {}
+            }
             ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                lastMsgTime = Date.now();
+            };
             ws.onmessage = (event) => {
+                lastMsgTime = Date.now();
                 const data = JSON.parse(event.data);
                 if (data.type === "progress" && eventCallbacks["scan_progress"]) {
                     eventCallbacks["scan_progress"].forEach(cb => cb(data));
@@ -184,6 +197,37 @@ if (!isWails) {
         }
     };
     connectWS();
+
+    // Recover from Mac sleep / lid close / zombie TCP sockets
+    const checkConnection = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            connectWS();
+            return;
+        }
+        // If the socket appeared open but hasn't received anything in >15s, ping or reconnect
+        if (Date.now() - lastMsgTime > 15000) {
+            try {
+                // Sending ping/heartbeat text frame to test if TCP socket is alive
+                ws.send("ping");
+            } catch (_) {
+                connectWS();
+            }
+        }
+    };
+
+    if (typeof window !== 'undefined') {
+        window.addEventListener('focus', checkConnection);
+        window.addEventListener('online', checkConnection);
+        if (typeof document !== 'undefined') {
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    checkConnection();
+                }
+            });
+        }
+        // Periodic keepalive / zombie detector
+        setInterval(checkConnection, 6000);
+    }
 }
 else {
     // Wails mode: Global listeners for persistence (Guarded against HMR duplicates)

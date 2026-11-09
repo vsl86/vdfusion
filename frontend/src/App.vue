@@ -585,6 +585,33 @@ onMounted(async () => {
     checkDeps()
   }
 
+  // Resync scan status on window focus or resume from laptop sleep
+  const syncLiveStatus = async () => {
+    try {
+      const st = await GetScanStatus()
+      if (st) {
+        if (!st.running && (scanning.value || scanState.value.phase === 'stopping')) {
+          scanning.value = false
+          scanState.value = { ...scanState.value, phase: 'stopped' }
+          fetchStats()
+        } else if (st.running && !scanning.value && scanState.value.phase !== 'stopping') {
+          scanning.value = true
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', syncLiveStatus)
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          syncLiveStatus()
+        }
+      })
+    }
+  }
+
   // Check for updates after 3 seconds to not block startup
   setTimeout(() => checkIfUpdateAvailable(true), 3000)
 })
@@ -700,8 +727,22 @@ const stopScan = async () => {
   scanState.value = { ...scanState.value, phase: 'stopping' }
   try {
     await StopScan()
+    // Actively poll scan status to confirm stoppage and update UI state
+    // even if the WebSocket event is delayed or dropped during network/sleep hiccups.
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 400))
+      try {
+        const st = await GetScanStatus()
+        if (st && !st.running) {
+          scanState.value = { ...scanState.value, phase: 'stopped' }
+          fetchStats()
+          break
+        }
+      } catch (_) {}
+    }
   } catch (e) {
     console.error('Failed to stop scan:', e)
+    scanState.value = { ...scanState.value, phase: 'stopped' }
   }
 }
 
