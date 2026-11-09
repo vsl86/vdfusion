@@ -272,13 +272,18 @@
 
           <!-- Native Controls when model downloaded -->
           <div v-else style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
-            <label class="filter-check">
+            <!-- "Use locally" only makes sense in local (Wails) mode -->
+            <label v-if="!isRemote" class="filter-check">
               <input type="checkbox" v-model="settings.local_neural_engine" @change="onToggleLocalNeural" />
               Use Apple Silicon Neural Engine for this Mac
             </label>
+            <p v-else style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">
+              ℹ️ Running in remote mode — local Neural Engine cannot be used as backend directly.
+              Enable LAN sharing below so your remote VDFusion instance can reach this Mac.
+            </p>
 
-            <!-- LAN Sharing option -->
-            <label class="filter-check" style="margin-left: 24px;">
+            <!-- LAN Sharing option — independent of local-use toggle -->
+            <label class="filter-check" :style="isRemote ? '' : 'margin-left: 24px;'">
               <input type="checkbox" v-model="settings.local_neural_lan_server" />
               Share Neural Engine over Local Network (LAN)
             </label>
@@ -518,6 +523,13 @@ const connectionConfig = ref(getConnectionConfig())
 const baseConnConfigStr = ref(JSON.stringify(connectionConfig.value))
 const connBlock = ref(null)
 
+// In remote mode the VDFusion backend runs on another machine, so
+// "Use Apple Silicon Neural Engine for this Mac" is meaningless —
+// 127.0.0.1 would resolve on the remote server, not on this Mac.
+// LAN sharing is still useful: it lets the remote server call back
+// to this Mac's CoreML engine over the network.
+const isRemote = computed(() => connectionConfig.value.mode === 'remote')
+
 watch(() => connectionConfig.value.mode, async (newMode) => {
   if (newMode === 'remote') {
     await nextTick()
@@ -595,7 +607,7 @@ const startModelDownload = async () => {
 }
 
 const onToggleLocalNeural = () => {
-  if (settings.value.local_neural_engine) {
+  if (settings.value.local_neural_engine && !isRemote.value) {
     settings.value.neural_backend_enabled = true
     settings.value.neural_backend_url = `http://127.0.0.1:${settings.value.local_neural_port || 8765}`
   }
