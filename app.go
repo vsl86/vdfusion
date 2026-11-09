@@ -237,10 +237,21 @@ func (a *App) StartLocalNeuralServer(lan bool, port int) error {
 	if lan {
 		bindHost = "0.0.0.0"
 	}
+	if a.settings != nil {
+		cfg := a.settings.Get()
+		cfg.LocalNeuralLANServer = lan
+		cfg.LocalNeuralPort = port
+		_ = a.settings.Update(cfg)
+	}
 	return neural.StartServer(fmt.Sprintf("%s:%d", bindHost, port))
 }
 
 func (a *App) StopLocalNeuralServer() error {
+	if a.settings != nil {
+		cfg := a.settings.Get()
+		cfg.LocalNeuralLANServer = false
+		_ = a.settings.Update(cfg)
+	}
 	return neural.StopServer()
 }
 

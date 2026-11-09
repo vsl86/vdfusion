@@ -278,26 +278,28 @@
               Use Apple Silicon Neural Engine for this Mac
             </label>
             <p v-else style="font-size: 0.8rem; color: var(--text-secondary); margin: 0;">
-              ℹ️ Running in remote mode — local Neural Engine cannot be used as backend directly.
-              Enable LAN sharing below so your remote VDFusion instance can reach this Mac.
+              ℹ️ Running in remote mode — this Mac can serve as an Apple Neural Engine accelerator for your remote server.
             </p>
 
             <!-- LAN Sharing option — independent of local-use toggle -->
             <label class="filter-check" :style="isRemote ? '' : 'margin-left: 24px;'">
-              <input type="checkbox" v-model="settings.local_neural_lan_server" />
-              Share Neural Engine over Local Network (LAN)
+              <input type="checkbox" v-model="settings.local_neural_lan_server" @change="onToggleLanServer" />
+              {{ isRemote ? "Share this Mac's Neural Engine over LAN (Remote Acceleration)" : "Share Neural Engine over Local Network (LAN)" }}
             </label>
-            <div v-if="settings.local_neural_lan_server" style="margin-left: 48px; padding: 10px; background: rgba(16, 185, 129, 0.08); border-radius: 6px;">
+            <div v-if="settings.local_neural_lan_server" :style="isRemote ? 'padding: 10px; background: rgba(16, 185, 129, 0.08); border-radius: 6px;' : 'margin-left: 48px; padding: 10px; background: rgba(16, 185, 129, 0.08); border-radius: 6px;'">
               <div style="font-size: 0.85rem; font-weight: 500; color: #10b981; margin-bottom: 4px;">
                 LAN Offloading Active
               </div>
               <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 8px 0;">
                 Your remote VDFusion instance (NAS, Linux server, CasaOS) can use this Mac's Neural Engine:
               </p>
-              <div v-for="ip in (localNeuralStatus.local_ips || [])" :key="ip" style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+              <div v-for="ip in (localNeuralStatus.local_ips || [])" :key="ip" style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
                 <code style="background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 4px;">http://{{ ip }}:{{ settings.local_neural_port || 8765 }}</code>
                 <button class="action-btn secondary" style="padding: 2px 8px; font-size: 0.75rem;" @click="copyLanUrl(ip)">
                   {{ copiedUrl === `http://${ip}:${settings.local_neural_port || 8765}` ? 'Copied!' : 'Copy' }}
+                </button>
+                <button v-if="isRemote" class="action-btn primary" style="padding: 2px 8px; font-size: 0.75rem;" @click="useLanUrlAsBackend(ip)">
+                  {{ settings.neural_backend_url === `http://${ip}:${settings.local_neural_port || 8765}` ? '✓ Active Backend' : 'Use as Backend' }}
                 </button>
               </div>
             </div>
@@ -312,13 +314,14 @@
           <span class="impact-icon">🧠</span>
           <div class="impact-content">
             <strong>Neural vision analysis enabled</strong>
-            <p v-if="settings.local_neural_engine">Running in-process / on local Apple Silicon Neural Engine (ANE).</p>
+            <p v-if="settings.local_neural_engine && !isRemote">Running in-process / on local Apple Silicon Neural Engine (ANE).</p>
+            <p v-else-if="isRemote && isMacLanUrl">Accelerating remote scan via this Mac's Apple Neural Engine over LAN.</p>
             <p v-else>Duplicate comparison will be offloaded to CLIP ViT-B/32 ONNX backend running on your host or LAN.</p>
           </div>
         </div>
 
         <div v-if="settings.neural_backend_enabled" style="margin-top: 16px; padding-left: 24px">
-          <div class="setting-row" v-if="!settings.local_neural_engine">
+          <div class="setting-row" v-if="!settings.local_neural_engine || isRemote">
             <label>Backend Server URL</label>
             <div style="display: flex; gap: 8px; margin-top: 4px;">
               <input v-model="settings.neural_backend_url" class="remote-url-input" placeholder="http://192.168.1.10:8765" />
@@ -467,7 +470,7 @@
 
 <script setup>
 import { ref, onMounted, computed, inject, watch, nextTick } from 'vue'
-import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend, GetStats, GetLocalNeuralStatus, DownloadLocalNeuralModel } from '../api'
+import { GetSettings, SaveSettings, ResetDB, CleanupDB, ExportDB, ImportDB, ResetSettings, getConnectionConfig, setConnectionConfig, GetDebugInfo, CheckForUpdates, TestNeuralBackend, GetStats, GetLocalNeuralStatus, DownloadLocalNeuralModel, StartLocalNeuralServer, StopLocalNeuralServer } from '../api'
 import NumberInput from './NumberInput.vue'
 import SliderFine from './SliderFine.vue'
 import DirPicker from './DirPicker.vue'
@@ -529,6 +532,12 @@ const connBlock = ref(null)
 // LAN sharing is still useful: it lets the remote server call back
 // to this Mac's CoreML engine over the network.
 const isRemote = computed(() => connectionConfig.value.mode === 'remote')
+
+const isMacLanUrl = computed(() => {
+  if (!settings.value.neural_backend_url) return false
+  const ips = localNeuralStatus.value.local_ips || []
+  return ips.some(ip => settings.value.neural_backend_url.includes(ip))
+})
 
 watch(() => connectionConfig.value.mode, async (newMode) => {
   if (newMode === 'remote') {
@@ -618,6 +627,28 @@ const copyLanUrl = (ip) => {
   navigator.clipboard.writeText(url)
   copiedUrl.value = url
   setTimeout(() => { copiedUrl.value = '' }, 2000)
+}
+
+const onToggleLanServer = async () => {
+  try {
+    if (settings.value.local_neural_lan_server) {
+      await StartLocalNeuralServer(true, settings.value.local_neural_port || 8765)
+    } else {
+      if (!settings.value.local_neural_engine) {
+        await StopLocalNeuralServer()
+      }
+    }
+    await loadLocalNeuralStatus()
+  } catch (e) {
+    console.error('Failed to toggle LAN server', e)
+  }
+}
+
+const useLanUrlAsBackend = async (ip) => {
+  const url = `http://${ip}:${settings.value.local_neural_port || 8765}`
+  settings.value.neural_backend_enabled = true
+  settings.value.neural_backend_url = url
+  await testNeuralBackendConnection()
 }
 
 const checkUpdates = async () => {
@@ -765,6 +796,9 @@ const refresh = async () => {
     ])
     if (s) {
       if (s.neural_phash_gate === undefined) s.neural_phash_gate = 60
+      if (isRemote.value) {
+        s.local_neural_engine = false
+      }
       settings.value = s
       baseSettings.value = JSON.parse(JSON.stringify(s))
     }
@@ -803,6 +837,15 @@ const onDirSelected = (path) => {
 
 const save = async () => {
   try {
+    // If running in desktop Mac app, sync local neural server
+    try {
+      if (settings.value.local_neural_lan_server) {
+        await StartLocalNeuralServer(true, settings.value.local_neural_port || 8765)
+      } else if (!settings.value.local_neural_engine) {
+        await StopLocalNeuralServer()
+      }
+    } catch (e) {}
+
     await SaveSettings(settings.value)
     baseSettings.value = JSON.parse(JSON.stringify(settings.value))
     saveSuccess.value = true
