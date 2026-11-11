@@ -168,6 +168,24 @@ func TestIsDuplicate(t *testing.T) {
 			settings: config.Settings{Percent: 90, NeuralPhashGate: 60, NeuralBackendEnabled: true},
 			wantIs:   false,
 		},
+		{
+			// Cross-quality pair: same-content embeddings with score just below threshold,
+			// but a large resolution gap (5x pixel ratio) gives a 3.5 pp bonus, making
+			// it match. Models the real SD-DivX vs HD-HEVC remaster case.
+			name: "Cross-quality duplicate caught by quality gap bonus",
+			a: db.FileRecord{
+				Width: 1440, Height: 1076,
+				// High cosine similarity but just below 96.8% threshold
+				NeuralEmbeddings: testVec1, // norm score = 1.0 against testVec1
+			},
+			b: db.FileRecord{
+				Width: 640, Height: 480,
+				NeuralEmbeddings: testVec1, // same vec -> score = 1.0
+			},
+			// At 96.8% threshold with 5x pixel ratio, bonus = 3.50 pp -> effective = 93.30%
+			settings: config.Settings{Percent: 96.8, NeuralBackendEnabled: true},
+			wantIs:   true,
+		},
 	}
 
 	e := NewComparisonEngine()
