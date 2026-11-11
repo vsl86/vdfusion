@@ -91,7 +91,11 @@ func (e *ComparisonEngine) getOrLoadEmbeddings(r *db.FileRecord) cachedEmbedding
 	}
 	embs, err := e.db.GetNeuralEmbeddingsByID(r.ID)
 	if err != nil || len(embs) == 0 {
-		return cachedEmbeddings{}
+		ce := cachedEmbeddings{}
+		if r.ID != 0 {
+			e.embCache.Store(r.ID, ce) // Negative cache: prevent repeated failed lookups
+		}
+		return ce
 	}
 	ce := cachedEmbeddings{
 		frames: embs,
@@ -108,6 +112,15 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 
 	if ctx.Err() != nil {
 		return nil
+	}
+
+	// Preload lightweight 1-vector centroids (~120 MB for 60k files) into RAM
+	// so the initial mean embedding test executes in memory without querying SQLite.
+	var centroids map[int64][]float32
+	if cfg.NeuralBackendEnabled && e.db != nil {
+		if c, err := e.db.GetAllCentroids(); err == nil {
+			centroids = c
+		}
 	}
 
 	ignoredPairs := make(map[string]map[string]bool)
@@ -259,17 +272,17 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 				default:
 				}
 
-				r := records[i]
+				r := &records[i]
 				maxTolerance := e.getDurationTolerance(r.Duration, cfg)
 
 				pairsProcessedInLoop := 0
 				for j := i + 1; j < len(records); j++ {
-					comp := records[j]
+					comp := &records[j]
 					diffSeconds := comp.Duration - r.Duration
 					if diffSeconds > maxTolerance {
 						break
 					}
-					e.comparePair(r, comp, i, j, maxTolerance, ignoredPairs, local, edges, cfg)
+					e.comparePair(r, comp, i, j, maxTolerance, ignoredPairs, local, edges, cfg, centroids)
 					pairsProcessedInLoop++
 				}
 				atomic.AddInt64(&processed, int64(pairsProcessedInLoop))
@@ -402,7 +415,7 @@ type counters struct {
 	maxSim         float64
 }
 
-func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings) bool {
+func (e *ComparisonEngine) comparePair(r, comp *db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings, centroids map[int64][]float32) bool {
 	diff := math.Abs(comp.Duration - r.Duration)
 	hashI := r.GetIdentifierHash()
 	hashJ := comp.GetIdentifierHash()
@@ -416,7 +429,7 @@ func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol f
 		return false
 	}
 	local.comp++
-	isDup, score := e.isDuplicateWithStats(r, comp, cfg, local)
+	isDup, score := e.isDuplicateWithStats(r, comp, cfg, local, centroids)
 	if score > local.maxSim {
 		local.maxSim = score
 	}
@@ -434,7 +447,7 @@ func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cf
 	var fileInfos []FileInfo
 	bestIdx := 0
 	for i, idx := range cluster {
-		r := records[idx]
+		r := &records[idx]
 		gID.WriteString(r.Path)
 		gID.WriteString("|")
 		fileInfos = append(fileInfos, FileInfo{
@@ -445,12 +458,12 @@ func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cf
 			bestIdx = i
 		}
 	}
-	refRecord := records[cluster[bestIdx]]
+	refRecord := &records[cluster[bestIdx]]
 	for i := range fileInfos {
 		if i == bestIdx {
 			continue
 		}
-		_, score := e.isDuplicate(refRecord, records[cluster[i]], cfg)
+		_, score := e.isDuplicate(refRecord, &records[cluster[i]], cfg)
 		fileInfos[i].Similarity = score * 100.0
 	}
 	return DuplicateGroup{ID: gID.String(), Files: fileInfos}
@@ -469,17 +482,24 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 	return tolerance
 }
 
-func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
-	return e.isDuplicateWithStats(a, b, cfg, nil)
+func (e *ComparisonEngine) isDuplicate(a, b *db.FileRecord, cfg config.Settings) (bool, float64) {
+	return e.isDuplicateWithStats(a, b, cfg, nil, nil)
 }
 
-func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.Settings, local *counters) (bool, float64) {
+func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.Settings, local *counters, centroids map[int64][]float32) (bool, float64) {
 	required := cfg.Percent / 100.0
 	phashScore := e.phashSimilarity(a, b)
 
+	// If neural backend is disabled, comparison is purely pHash-driven.
+	if !cfg.NeuralBackendEnabled {
+		if phashScore == 0 {
+			return false, 0
+		}
+		return phashScore >= required, phashScore
+	}
+
 	// Neural mode: pHash gate first (when hashes exist), then trim-tolerant
-	// cosine similarity. This is tuned for the same underlying video across
-	// quality/scale/trim changes, not broad semantic matching.
+	// cosine similarity.
 	gate := cfg.NeuralPhashGate / 100.0
 	if gate > 0 && phashScore > 0 && phashScore < gate {
 		if local != nil {
@@ -488,15 +508,39 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 		return false, phashScore
 	}
 
-	aEmbs := e.getOrLoadEmbeddings(&a)
-	bEmbs := e.getOrLoadEmbeddings(&b)
+	// Fast in-memory Centroid Check (Tier-1):
+	// Centroids are preloaded (~120 MB for 60k files).
+	// If centroids map is available:
+	if len(centroids) > 0 {
+		centA, hasA := centroids[a.ID]
+		centB, hasB := centroids[b.ID]
+		if !hasA || !hasB {
+			// Either file has no neural embeddings in DB. Cannot match neurally.
+			// Only high pHash could qualify as duplicate.
+			if local != nil {
+				local.neuralGateSkip++
+			}
+			return phashScore >= required, phashScore
+		}
+		meanCosine := neural.CosineSimilarity(centA, centB)
+		meanNorm := (meanCosine + 1.0) / 2.0
+		minMeanThreshold := math.Max(0.55, required-0.20)
+		if meanNorm < minMeanThreshold {
+			if local != nil {
+				local.neuralMeanSkip++
+			}
+			return false, meanNorm
+		}
+	}
+
+	// Tier-2: Only candidate duplicates that passed the in-memory centroid check
+	// reach here to load full 16 frames (< 5% of candidate pairs!).
+	aEmbs := e.getOrLoadEmbeddings(a)
+	bEmbs := e.getOrLoadEmbeddings(b)
 
 	if len(aEmbs.frames) > 0 && len(bEmbs.frames) > 0 {
-		// Tier-1 Mean Embedding Fast Gate:
-		// If the mean vectors don't match, the full 16x16 temporal alignment
-		// cannot reach the duplicate threshold. Checking this 1 dot product
-		// rejects ~95% of false-positive pairs without computing 256 dot products.
-		if len(aEmbs.mean) > 0 && len(bEmbs.mean) > 0 {
+		// If centroids weren't preloaded (e.g. unit tests without DB), fallback to computed mean check
+		if len(centroids) == 0 && len(aEmbs.mean) > 0 && len(bEmbs.mean) > 0 {
 			meanCosine := neural.CosineSimilarity(aEmbs.mean, bEmbs.mean)
 			meanNorm := (meanCosine + 1.0) / 2.0
 			minMeanThreshold := math.Max(0.55, required-0.20)
@@ -540,7 +584,7 @@ func init() {
 	}
 }
 
-func (e *ComparisonEngine) phashSimilarity(a, b db.FileRecord) float64 {
+func (e *ComparisonEngine) phashSimilarity(a, b *db.FileRecord) float64 {
 	n := len(a.PHashV2s)
 	m := len(b.PHashV2s)
 	if n == 0 || m == 0 {

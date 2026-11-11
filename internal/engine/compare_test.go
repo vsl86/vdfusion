@@ -77,7 +77,7 @@ func TestComparisonEngine(t *testing.T) {
 				{Path: "/file2.mp4", Size: 100, Duration: 10, Width: 1920, Height: 1080, NeuralEmbeddings: testVec2},
 			},
 			ignored:     nil,
-			settings:    config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2},
+			settings:    config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2, NeuralBackendEnabled: true},
 			wantGroups:  1,
 			wantEachLen: []int{2},
 		},
@@ -88,7 +88,7 @@ func TestComparisonEngine(t *testing.T) {
 				{Path: "/file2.mp4", Size: 100, Duration: 10, Width: 1920, Height: 1080, NeuralEmbeddings: testVec3},
 			},
 			ignored:    nil,
-			settings:   config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2},
+			settings:   config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2, NeuralBackendEnabled: true},
 			wantGroups: 0,
 		},
 	}
@@ -144,7 +144,7 @@ func TestIsDuplicate(t *testing.T) {
 			name:      "Identical neural embeddings",
 			a:         db.FileRecord{NeuralEmbeddings: testVec1},
 			b:         db.FileRecord{NeuralEmbeddings: testVec2},
-			settings:  config.Settings{Percent: 90},
+			settings:  config.Settings{Percent: 90, NeuralBackendEnabled: true},
 			wantIs:    true,
 			wantScore: 1.0,
 		},
@@ -152,7 +152,7 @@ func TestIsDuplicate(t *testing.T) {
 			name:     "Different neural embeddings",
 			a:        db.FileRecord{NeuralEmbeddings: testVec1},
 			b:        db.FileRecord{NeuralEmbeddings: testVec3},
-			settings: config.Settings{Percent: 90},
+			settings: config.Settings{Percent: 90, NeuralBackendEnabled: true},
 			wantIs:   false,
 		},
 		{
@@ -165,7 +165,7 @@ func TestIsDuplicate(t *testing.T) {
 				PHashV2s:         []uint64{(1 << 39) - 1},
 				NeuralEmbeddings: testVec2,
 			},
-			settings: config.Settings{Percent: 90, NeuralPhashGate: 60},
+			settings: config.Settings{Percent: 90, NeuralPhashGate: 60, NeuralBackendEnabled: true},
 			wantIs:   false,
 		},
 	}
@@ -173,7 +173,7 @@ func TestIsDuplicate(t *testing.T) {
 	e := NewComparisonEngine()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isDup, score := e.isDuplicate(tt.a, tt.b, tt.settings)
+			isDup, score := e.isDuplicate(&tt.a, &tt.b, tt.settings)
 			if isDup != tt.wantIs {
 				t.Errorf("isDuplicate() isDup = %v, want %v", isDup, tt.wantIs)
 			}
@@ -190,7 +190,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 	t.Run("phash shifted by trimmed intro", func(t *testing.T) {
 		a := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{1, 2, 3, 4})}
 		b := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{99, 1, 2, 3, 4})}
-		if got := e.phashSimilarity(a, b); got != 1.0 {
+		if got := e.phashSimilarity(&a, &b); got != 1.0 {
 			t.Fatalf("phashSimilarity() = %v, want 1", got)
 		}
 	})
@@ -203,7 +203,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{e1, e2, e3})}
 		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{other, e1, e2, e3})}
 
-		isDup, score := e.isDuplicate(a, b, config.Settings{Percent: 95})
+		isDup, score := e.isDuplicate(&a, &b, config.Settings{Percent: 95, NeuralBackendEnabled: true})
 		if !isDup {
 			t.Fatalf("isDuplicate() = false, want true; score=%v", score)
 		}
@@ -229,7 +229,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 1: Default gate at 60% -> 0.50 < 0.60 -> skipped by gate
 		local := &counters{}
-		isDup, _ := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 60}, local)
+		isDup, _ := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 60, NeuralBackendEnabled: true}, local, nil)
 		if isDup {
 			t.Fatalf("expected isDup=false when phash < gate")
 		}
@@ -239,7 +239,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 2: Lowered gate at 40% -> 0.50 >= 0.40 -> passes gate and matches via neural
 		local2 := &counters{}
-		isDup2, score2 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 40}, local2)
+		isDup2, score2 := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 40, NeuralBackendEnabled: true}, local2, nil)
 		if !isDup2 {
 			t.Fatalf("expected isDup=true when phash >= gate, got false with score=%v", score2)
 		}
@@ -252,12 +252,47 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 3: Gate disabled at 0% -> passes gate and matches via neural
 		local3 := &counters{}
-		isDup3, score3 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 0}, local3)
+		isDup3, score3 := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 0, NeuralBackendEnabled: true}, local3, nil)
 		if !isDup3 {
 			t.Fatalf("expected isDup=true when gate is 0, got false with score=%v", score3)
 		}
 		if local3.neuralGateSkip != 0 {
 			t.Fatalf("expected neuralGateSkip=0, got %d", local3.neuralGateSkip)
+		}
+
+		// Case 4: In-memory centroid early exit (orthogonal centroids short-circuit without full embeddings)
+		aWithID := a
+		aWithID.ID = 101
+		bWithID := b
+		bWithID.ID = 102
+		centroids := map[int64][]float32{
+			101: {1, 0, 0, 0},
+			102: {0, 1, 0, 0}, // orthogonal -> sim = 0.0 < minMeanThreshold
+		}
+		local4 := &counters{}
+		isDup4, _ := e.isDuplicateWithStats(&aWithID, &bWithID, config.Settings{Percent: 90, NeuralPhashGate: 40, NeuralBackendEnabled: true}, local4, centroids)
+		if isDup4 {
+			t.Fatalf("expected isDup=false when centroids are orthogonal")
+		}
+		if local4.neuralMeanSkip != 1 {
+			t.Fatalf("expected neuralMeanSkip=1 from centroid pre-filter, got %d", local4.neuralMeanSkip)
+		}
+		if local4.neuralComp != 0 {
+			t.Fatalf("expected neuralComp=0 (no full embeddings loaded), got %d", local4.neuralComp)
+		}
+
+		// Case 5: Centroid map present but file lacks centroid -> short circuit
+		centroidsIncomplete := map[int64][]float32{
+			101: {1, 0, 0, 0},
+			// 102 missing
+		}
+		local5 := &counters{}
+		isDup5, _ := e.isDuplicateWithStats(&aWithID, &bWithID, config.Settings{Percent: 90, NeuralPhashGate: 40, NeuralBackendEnabled: true}, local5, centroidsIncomplete)
+		if isDup5 {
+			t.Fatalf("expected isDup=false when file lacks centroid in map")
+		}
+		if local5.neuralGateSkip != 1 {
+			t.Fatalf("expected neuralGateSkip=1 when centroid missing, got %d", local5.neuralGateSkip)
 		}
 	})
 }
@@ -316,6 +351,21 @@ func BenchmarkNeuralSimilarity(b *testing.B) {
 	}
 }
 
+func BenchmarkPHashSimilarity(b *testing.B) {
+	e := NewComparisonEngine()
+	recA := db.FileRecord{PHashV2s: make([]uint64, 16)}
+	recB := db.FileRecord{PHashV2s: make([]uint64, 16)}
+	for i := range 16 {
+		recA.PHashV2s[i] = uint64(i * 0x123456789abcdef0)
+		recB.PHashV2s[i] = uint64(i * 0x0fedcba987654321)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		e.phashSimilarity(&recA, &recB)
+	}
+}
+
 func BenchmarkPairComparisonWithMeanEarlyExit(b *testing.B) {
 	e := NewComparisonEngine()
 	vecA := make([][]float32, 16)
@@ -328,11 +378,11 @@ func BenchmarkPairComparisonWithMeanEarlyExit(b *testing.B) {
 	}
 	recA := db.FileRecord{ID: 1, Duration: 100, NeuralEmbeddings: vecA, PHashV2s: []uint64{0x12345678}}
 	recB := db.FileRecord{ID: 2, Duration: 100, NeuralEmbeddings: vecB, PHashV2s: []uint64{0x12345678}}
-	cfg := config.Settings{Percent: 96, NeuralPhashGate: 40}
+	cfg := config.Settings{Percent: 96, NeuralPhashGate: 40, NeuralBackendEnabled: true}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		e.isDuplicate(recA, recB, cfg)
+		e.isDuplicate(&recA, &recB, cfg)
 	}
 }
