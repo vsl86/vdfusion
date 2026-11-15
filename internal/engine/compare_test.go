@@ -91,6 +91,23 @@ func TestComparisonEngine(t *testing.T) {
 			settings:   config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2, NeuralBackendEnabled: true},
 			wantGroups: 0,
 		},
+		{
+			// Transitive chain: 1-2 match (dist 4 = 93.75%), 2-3 match (dist 4 = 93.75%), 3-4 match (dist 4 = 93.75%).
+			// But 1-3 is dist 8 (87.5% < 90%), and 1-4 is dist 12 (81.25% < 90%).
+			// Union-find would lump 1, 2, 3, 4 together.
+			// reclusterByAdjacency must split them into pure pairwise groups.
+			name: "Transitive chain split into coherent groups",
+			records: []db.FileRecord{
+				{Path: "/f1.mp4", Size: 200, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x0000000000000000}},
+				{Path: "/f2.mp4", Size: 190, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x000000000000000F}},
+				{Path: "/f3.mp4", Size: 180, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x00000000000000FF}},
+				{Path: "/f4.mp4", Size: 170, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x0000000000000FFF}},
+			},
+			ignored:     nil,
+			settings:    config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2},
+			wantGroups:  2,
+			wantEachLen: []int{2, 2},
+		},
 	}
 
 	e := NewComparisonEngine()
