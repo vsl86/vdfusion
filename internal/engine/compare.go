@@ -570,6 +570,8 @@ func (e *ComparisonEngine) isDuplicate(a, b *db.FileRecord, cfg config.Settings)
 
 func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.Settings, local *counters, centroids map[int64][]float32) (bool, float64) {
 	required := cfg.Percent / 100.0
+	bonus := qualityGapBonus(a, b)
+	effectiveRequired := required - bonus
 	phashScore := e.phashSimilarity(a, b)
 
 	// If neural backend is disabled, comparison is purely pHash-driven.
@@ -606,7 +608,11 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.
 		}
 		meanCosine := neural.CosineSimilarity(centA, centB)
 		meanNorm := (meanCosine + 1.0) / 2.0
-		minMeanThreshold := math.Max(0.55, required-0.20)
+		// In CLIP hyperspace, true duplicates (even cross-codec / cross-resolution with
+		// intro/outro trims) have centroid cosine >= 0.80..0.98 (meanNorm >= 90%..99%).
+		// We use a safety buffer of 5 percentage points below effectiveRequired, with
+		// a safe floor of 0.85 (raw cosine 0.70).
+		minMeanThreshold := math.Max(0.85, effectiveRequired-0.05)
 		if meanNorm < minMeanThreshold {
 			if local != nil {
 				local.neuralMeanSkip++
@@ -625,7 +631,7 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.
 		if len(centroids) == 0 && len(aEmbs.mean) > 0 && len(bEmbs.mean) > 0 {
 			meanCosine := neural.CosineSimilarity(aEmbs.mean, bEmbs.mean)
 			meanNorm := (meanCosine + 1.0) / 2.0
-			minMeanThreshold := math.Max(0.55, required-0.20)
+			minMeanThreshold := math.Max(0.85, effectiveRequired-0.05)
 			if meanNorm < minMeanThreshold {
 				if local != nil {
 					local.neuralMeanSkip++
@@ -641,13 +647,6 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.
 			}
 			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring.
 			normScore := (score + 1.0) / 2.0
-
-			// Cross-quality bonus: CLIP embeddings drift when the same video exists
-			// in different quality tiers (e.g. SD DivX vs HD HEVC remaster).
-			// A large resolution ratio indicates expected encoding-induced drift, so
-			// we lower the effective threshold proportionally rather than raising the
-			// score itself, keeping displayed scores honest.
-			effectiveRequired := required - qualityGapBonus(a, b)
 			return normScore >= effectiveRequired, normScore
 		}
 	}
