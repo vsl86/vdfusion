@@ -449,7 +449,9 @@ func reclusterByAdjacency(cluster []int, adj map[int][]int, ignoredPairs map[str
 					degree++
 				}
 			}
-			if degree > bestDegree || (degree == bestDegree && degree > 0 && records[u].Size > bestSize) {
+			if degree > bestDegree ||
+				(degree == bestDegree && degree > 0 && records[u].Size > bestSize) ||
+				(degree == bestDegree && degree > 0 && bestCenter != -1 && records[u].Size == bestSize && records[u].Path < records[bestCenter].Path) {
 				bestCenter = u
 				bestDegree = degree
 				bestSize = records[u].Size
@@ -463,10 +465,22 @@ func reclusterByAdjacency(cluster []int, adj map[int][]int, ignoredPairs map[str
 		hCenter := records[bestCenter].GetIdentifierHash()
 		group := []int{bestCenter}
 
+		// Sort candidate neighbors deterministically: highest size first, then path
+		var candidates []int
 		for _, v := range adj[bestCenter] {
-			if !inCluster[v] || assigned[v] {
-				continue
+			if inCluster[v] && !assigned[v] {
+				candidates = append(candidates, v)
 			}
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			ci, cj := candidates[i], candidates[j]
+			if records[ci].Size != records[cj].Size {
+				return records[ci].Size > records[cj].Size
+			}
+			return records[ci].Path < records[cj].Path
+		})
+
+		for _, v := range candidates {
 			hV := records[v].GetIdentifierHash()
 			if ignoredPairs[hCenter] != nil && ignoredPairs[hCenter][hV] {
 				continue
