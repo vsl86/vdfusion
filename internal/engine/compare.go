@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -145,30 +144,8 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 		return records[i].Duration < records[j].Duration
 	})
 
-	parent := make([]int, len(records))
-	for i := range parent {
-		parent[i] = i
-	}
-
-	var find func(int) int
-	find = func(i int) int {
-		if parent[i] == i {
-			return i
-		}
-		parent[i] = find(parent[i])
-		return parent[i]
-	}
-
-	union := func(i, j int) {
-		rootI := find(i)
-		rootJ := find(j)
-		if rootI != rootJ {
-			parent[rootI] = rootJ
-		}
-	}
-
-	adj := make(map[int][]int)
-	edges := make(chan [2]int, 65536)
+	adjMap := make([]map[int]float64, len(records))
+	edges := make(chan matchEdge, 65536)
 	var aggWG sync.WaitGroup
 	aggWG.Add(1)
 	go func() {
@@ -179,10 +156,15 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 				if !ok {
 					return
 				}
-				i, j := p[0], p[1]
-				adj[i] = append(adj[i], j)
-				adj[j] = append(adj[j], i)
-				union(i, j)
+				i, j, score := p.i, p.j, p.score
+				if adjMap[i] == nil {
+					adjMap[i] = make(map[int]float64)
+				}
+				adjMap[i][j] = score
+				if adjMap[j] == nil {
+					adjMap[j] = make(map[int]float64)
+				}
+				adjMap[j][i] = score
 			case <-ctx.Done():
 				return
 			}
@@ -322,167 +304,64 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 	log.Printf("%s", statsMsg)
 	if reporter != nil {
 		reporter.BroadcastLog("info", statsMsg)
+		reporter.BroadcastProgress(len(records), len(records), "clustering", "Grouping duplicates...", time.Since(comparisonStartTime).Seconds(), 0)
 	}
 
-	clusters := make(map[int][]int)
-	for i := range records {
-		root := find(i)
-		clusters[root] = append(clusters[root], i)
+	// Sort reference candidates: highest size first, then path
+	refOrder := make([]int, len(records))
+	for i := range refOrder {
+		refOrder[i] = i
 	}
+	sort.Slice(refOrder, func(a, b int) bool {
+		ra, rb := &records[refOrder[a]], &records[refOrder[b]]
+		if ra.Size != rb.Size {
+			return ra.Size > rb.Size
+		}
+		return ra.Path < rb.Path
+	})
 
-	var results []DuplicateGroup
-	for _, cluster := range clusters {
-		if len(cluster) < 2 {
+	assigned := make([]bool, len(records))
+	var finalResults []DuplicateGroup
+
+	for _, u := range refOrder {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if assigned[u] || len(adjMap[u]) == 0 {
 			continue
 		}
 
-		// Union-find produces transitive closures: A matches B, B matches C → all
-		// three land in one cluster even if A and C are completely unrelated (50%).
-		// Re-cluster each union-find component using only the confirmed direct edges
-		// stored in `adj`, so every file in a final group has at least one direct
-		// high-similarity neighbour within that group.
-		subGroups := reclusterByAdjacency(cluster, adj, ignoredPairs, records)
-		for _, sub := range subGroups {
-			if len(sub) < 2 {
-				continue
-			}
-			if len(sub) > 500 {
-				log.Printf("ComparisonEngine: Cap reached for cluster of size %d.", len(sub))
-				sub = sub[:500]
-			}
-			g := e.buildGroup(sub, records, cfg)
-			if len(g.Files) >= 2 {
-				results = append(results, g)
-			}
-		}
-	}
-
-	seenGroups := make(map[string]bool)
-	var finalResults []DuplicateGroup
-	for _, g := range results {
-		if !seenGroups[g.ID] {
-			seenGroups[g.ID] = true
-			finalResults = append(finalResults, g)
-		}
-	}
-	return finalResults
-}
-
-type counters struct {
-	comp           int
-	skipD          int
-	skipH          int
-	neuralComp     int
-	neuralGateSkip int
-	neuralMeanSkip int
-	maxSim         float64
-}
-
-func (e *ComparisonEngine) comparePair(r, comp *db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings, centroids map[int64][]float32) bool {
-	diff := math.Abs(comp.Duration - r.Duration)
-	hashI := r.GetIdentifierHash()
-	hashJ := comp.GetIdentifierHash()
-	if ignoredPairs[hashI] != nil && ignoredPairs[hashI][hashJ] {
-		return false
-	}
-	tolB := e.getDurationTolerance(comp.Duration, cfg)
-	allowed := math.Min(maxTol, tolB)
-	if diff > allowed {
-		local.skipD++
-		return false
-	}
-	local.comp++
-	isDup, score := e.isDuplicateWithStats(r, comp, cfg, local, centroids)
-	if score > local.maxSim {
-		local.maxSim = score
-	}
-	if isDup {
-		edges <- [2]int{i, j}
-		return true
-	}
-	local.skipH++
-	return false
-}
-
-// reclusterByAdjacency partitions a union-find cluster into tight duplicate groups
-// using only confirmed direct edges in `adj`.
-// Union-find produces transitive closures: if A~B, B~C, C~D, all files land in one
-// component even if A and D are completely unrelated (50%).
-//
-// This function extracts groups such that every member in a group is a confirmed
-// duplicate (has a direct edge in adj) of the group's reference file, preventing
-// distant transitive files from being lumped into a giant group.
-func reclusterByAdjacency(cluster []int, adj map[int][]int, ignoredPairs map[string]map[string]bool, records []db.FileRecord) [][]int {
-	if len(cluster) <= 2 {
-		if len(cluster) == 2 {
-			if slices.Contains(adj[cluster[0]], cluster[1]) {
-				h0 := records[cluster[0]].GetIdentifierHash()
-				h1 := records[cluster[1]].GetIdentifierHash()
-				if ignoredPairs[h0] == nil || !ignoredPairs[h0][h1] {
-					return [][]int{cluster}
-				}
-			}
-		}
-		return nil
-	}
-
-	inCluster := make(map[int]bool, len(cluster))
-	for _, idx := range cluster {
-		inCluster[idx] = true
-	}
-
-	assigned := make(map[int]bool, len(cluster))
-	var groups [][]int
-
-	for {
-		bestCenter := -1
-		bestDegree := 0
-		var bestSize int64 = -1
-
-		for _, u := range cluster {
-			if assigned[u] {
-				continue
-			}
-			degree := 0
-			for _, v := range adj[u] {
-				if inCluster[v] && !assigned[v] {
-					degree++
-				}
-			}
-			if degree > bestDegree ||
-				(degree == bestDegree && degree > 0 && records[u].Size > bestSize) ||
-				(degree == bestDegree && degree > 0 && bestCenter != -1 && records[u].Size == bestSize && records[u].Path < records[bestCenter].Path) {
-				bestCenter = u
-				bestDegree = degree
-				bestSize = records[u].Size
-			}
-		}
-
-		if bestCenter == -1 || bestDegree == 0 {
-			break
-		}
-
-		hCenter := records[bestCenter].GetIdentifierHash()
-		group := []int{bestCenter}
-
-		// Sort candidate neighbors deterministically: highest size first, then path
+		// Find unassigned confirmed duplicates of u
 		var candidates []int
-		for _, v := range adj[bestCenter] {
-			if inCluster[v] && !assigned[v] {
+		for v := range adjMap[u] {
+			if !assigned[v] {
 				candidates = append(candidates, v)
 			}
 		}
+		if len(candidates) == 0 {
+			continue
+		}
+
+		// Sort candidate neighbors: highest score first, then size descending, then path
 		sort.Slice(candidates, func(i, j int) bool {
 			ci, cj := candidates[i], candidates[j]
+			scoreI := adjMap[u][ci]
+			scoreJ := adjMap[u][cj]
+			if scoreI != scoreJ {
+				return scoreI > scoreJ
+			}
 			if records[ci].Size != records[cj].Size {
 				return records[ci].Size > records[cj].Size
 			}
 			return records[ci].Path < records[cj].Path
 		})
 
+		hU := records[u].GetIdentifierHash()
+		group := []int{u}
+
 		for _, v := range candidates {
 			hV := records[v].GetIdentifierHash()
-			if ignoredPairs[hCenter] != nil && ignoredPairs[hCenter][hV] {
+			if ignoredPairs[hU] != nil && ignoredPairs[hU][hV] {
 				continue
 			}
 
@@ -491,10 +370,10 @@ func reclusterByAdjacency(cluster []int, adj map[int][]int, ignoredPairs map[str
 			// in the group, it cannot be in this group.
 			mutualMatch := true
 			for _, m := range group {
-				if m == bestCenter {
+				if m == u {
 					continue
 				}
-				if !slices.Contains(adj[v], m) {
+				if _, ok := adjMap[v][m]; !ok {
 					mutualMatch = false
 					break
 				}
@@ -513,56 +392,84 @@ func reclusterByAdjacency(cluster []int, adj map[int][]int, ignoredPairs map[str
 			for _, m := range group {
 				assigned[m] = true
 			}
-			groups = append(groups, group)
-		} else {
-			assigned[bestCenter] = true
+			if len(group) > 500 {
+				log.Printf("ComparisonEngine: Cap reached for cluster of size %d.", len(group))
+				group = group[:500]
+			}
+
+			refRecord := &records[u]
+			fileInfos := make([]FileInfo, len(group))
+			fileInfos[0] = FileInfo{
+				Path: refRecord.Path, Size: refRecord.Size, Duration: refRecord.Duration,
+				Width: refRecord.Width, Height: refRecord.Height, IdentifierHash: hU,
+				Codec: refRecord.Codec, Bitrate: refRecord.Bitrate, FPS: refRecord.FPS,
+				Similarity: 100.0,
+			}
+			for idx, v := range group[1:] {
+				r := &records[v]
+				sim := adjMap[u][v] * 100.0
+				fileInfos[idx+1] = FileInfo{
+					Path: r.Path, Size: r.Size, Duration: r.Duration,
+					Width: r.Width, Height: r.Height, IdentifierHash: r.GetIdentifierHash(),
+					Codec: r.Codec, Bitrate: r.Bitrate, FPS: r.FPS,
+					Similarity: sim,
+				}
+			}
+
+			var gID strings.Builder
+			for _, fi := range fileInfos {
+				gID.WriteString(fi.Path)
+				gID.WriteString("|")
+			}
+			finalResults = append(finalResults, DuplicateGroup{
+				ID:    gID.String(),
+				Files: fileInfos,
+			})
 		}
 	}
-
-	return groups
+	return finalResults
 }
 
-func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cfg config.Settings) DuplicateGroup {
-	sort.Ints(cluster)
-	var fileInfos []FileInfo
-	bestIdx := 0
-	for i, idx := range cluster {
-		r := &records[idx]
-		fileInfos = append(fileInfos, FileInfo{
-			Path: r.Path, Size: r.Size, Duration: r.Duration, Width: r.Width, Height: r.Height,
-			IdentifierHash: r.GetIdentifierHash(), Codec: r.Codec, Bitrate: r.Bitrate, FPS: r.FPS, Similarity: 100.0,
-		})
-		if fileInfos[i].Size > fileInfos[bestIdx].Size {
-			bestIdx = i
-		}
-	}
-	refRecord := &records[cluster[bestIdx]]
+type matchEdge struct {
+	i     int
+	j     int
+	score float64
+}
 
-	// Only retain files that actually qualify as duplicates of refRecord
-	validFiles := []FileInfo{fileInfos[bestIdx]}
-	for i := range fileInfos {
-		if i == bestIdx {
-			continue
-		}
-		isDup, score := e.isDuplicate(refRecord, &records[cluster[i]], cfg)
-		if isDup {
-			fi := fileInfos[i]
-			fi.Similarity = score * 100.0
-			validFiles = append(validFiles, fi)
-		}
-	}
+type counters struct {
+	comp           int
+	skipD          int
+	skipH          int
+	neuralComp     int
+	neuralGateSkip int
+	neuralMeanSkip int
+	maxSim         float64
+}
 
-	if len(validFiles) < 2 {
-		return DuplicateGroup{}
+func (e *ComparisonEngine) comparePair(r, comp *db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan matchEdge, cfg config.Settings, centroids map[int64][]float32) bool {
+	diff := math.Abs(comp.Duration - r.Duration)
+	hashI := r.GetIdentifierHash()
+	hashJ := comp.GetIdentifierHash()
+	if ignoredPairs[hashI] != nil && ignoredPairs[hashI][hashJ] {
+		return false
 	}
-
-	var gID strings.Builder
-	for _, fi := range validFiles {
-		gID.WriteString(fi.Path)
-		gID.WriteString("|")
+	tolB := e.getDurationTolerance(comp.Duration, cfg)
+	allowed := math.Min(maxTol, tolB)
+	if diff > allowed {
+		local.skipD++
+		return false
 	}
-
-	return DuplicateGroup{ID: gID.String(), Files: validFiles}
+	local.comp++
+	isDup, score := e.isDuplicateWithStats(r, comp, cfg, local, centroids)
+	if score > local.maxSim {
+		local.maxSim = score
+	}
+	if isDup {
+		edges <- matchEdge{i: i, j: j, score: score}
+		return true
+	}
+	local.skipH++
+	return false
 }
 
 func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Settings) float64 {

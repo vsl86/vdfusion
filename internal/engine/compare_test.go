@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"vdfusion/internal/config"
 	"vdfusion/internal/db"
@@ -419,5 +421,72 @@ func BenchmarkPairComparisonWithMeanEarlyExit(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		e.isDuplicate(&recA, &recB, cfg)
+	}
+}
+
+func TestComparisonEngine_LargeDenseClusterNoHang(t *testing.T) {
+	// 500 files, all identical duration and hashes (full clique of 500*499/2 = 124,750 edges)
+	records := make([]db.FileRecord, 500)
+	for i := range records {
+		records[i] = db.FileRecord{
+			Path:     fmt.Sprintf("/file_%04d.mp4", i),
+			Size:     int64(1000000 - i*100),
+			Duration: 100,
+			Width:    1920,
+			Height:   1080,
+			PHashV2s: []uint64{0xDEADBEEF},
+		}
+	}
+
+	e := NewComparisonEngine()
+	ctx := context.Background()
+	cfg := config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 4}
+
+	start := time.Now()
+	groups := e.Compare(ctx, records, nil, cfg, nil)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Compare() took %v, want < 5s", elapsed)
+	}
+	if len(groups) == 0 {
+		t.Fatalf("Compare() got 0 groups, want at least 1")
+	}
+	t.Logf("Clustered %d files (%d edges) in %v into %d groups", len(records), len(records)*(len(records)-1)/2, elapsed, len(groups))
+}
+
+func TestComparisonEngine_TransitiveChainNoHang(t *testing.T) {
+	// 1000 files in a rolling chain where each file matches adjacent 3 files
+	// but distant files are completely different.
+	records := make([]db.FileRecord, 1000)
+	for i := range records {
+		records[i] = db.FileRecord{
+			Path:     fmt.Sprintf("/file_%04d.mp4", i),
+			Size:     int64(1000000 - i*10),
+			Duration: 100,
+			Width:    1920,
+			Height:   1080,
+			// Rolling pHash bits so consecutive files have Hamming distance 2 (match at 96%),
+			// but files > 5 apart have distance > 10 (no match).
+			PHashV2s: []uint64{uint64(i * 3)},
+		}
+	}
+
+	e := NewComparisonEngine()
+	ctx := context.Background()
+	cfg := config.Settings{Percent: 95, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 4}
+
+	start := time.Now()
+	groups := e.Compare(ctx, records, nil, cfg, nil)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Compare() took %v, want < 5s", elapsed)
+	}
+	t.Logf("Transitive chain: 1000 files clustered in %v into %d groups", elapsed, len(groups))
+	for _, g := range groups {
+		if len(g.Files) > 50 {
+			t.Errorf("Group too large: %d files", len(g.Files))
+		}
 	}
 }
