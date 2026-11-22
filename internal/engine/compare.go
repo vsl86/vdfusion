@@ -459,14 +459,38 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.
 	bEmbs := e.getOrLoadEmbeddings(b)
 
 	if len(aEmbs) > 0 && len(bEmbs) > 0 {
-		score, ok := e.neuralSimilarity(aEmbs, bEmbs)
+		match, ok := e.neuralSimilarity(aEmbs, bEmbs)
 		if ok {
 			if local != nil {
 				local.neuralComp++
 			}
 			// Normalise from [-1,1] to [0,1] for consistency with pHash scoring.
-			normScore := (score + 1.0) / 2.0
-			return normScore >= required, normScore
+			normScore := (match.avg + 1.0) / 2.0
+
+			isDup := false
+			if match.overlap < 4 {
+				// For very short sequences (1-3 frames), rely strictly on average score.
+				isDup = normScore >= required
+			} else {
+				minRequiredPeaks := min(2, max(1, match.overlap/4))
+				strongPeakMin := min(4, max(2, (match.overlap+2)/3))
+
+				if normScore >= required {
+					// To avoid flat genre noise (where all frames sit around 91-94%),
+					// require either a very high score (>= 0.970), high required threshold (> 0.965),
+					// or at least minRequiredPeaks frames reaching peak similarity (>= 96.5%).
+					if normScore >= 0.970 || required > 0.965 || match.peakCount >= minRequiredPeaks {
+						isDup = true
+					}
+				} else if normScore >= math.Max(0.940, required-0.020) && match.peakCount >= strongPeakMin {
+					// Cross-quality duplicates (e.g. 1440p vs 480p DivX) have compression blur
+					// on motion frames lowering the average, but contain multiple sharp peak frames
+					// (raw cosine >= 0.930 / norm >= 96.5%) that definitively identify the same scene.
+					isDup = true
+				}
+			}
+
+			return isDup, normScore
 		}
 	}
 
@@ -545,15 +569,26 @@ func (e *ComparisonEngine) phashSimilarity(a, b *db.FileRecord) float64 {
 	return best
 }
 
-func (e *ComparisonEngine) neuralSimilarity(a, b [][]float32) (float64, bool) {
+type neuralMatch struct {
+	avg       float64
+	peakCount int
+	maxScore  float64
+	overlap   int
+}
+
+func (e *ComparisonEngine) neuralSimilarity(a, b [][]float32) (neuralMatch, bool) {
 	n := len(a)
 	m := len(b)
 	if n == 0 || m == 0 {
-		return 0, false
+		return neuralMatch{}, false
 	}
 	if n == 1 && m == 1 {
 		sim := neural.CosineSimilarity(a[0], b[0])
-		return sim, sim != 0
+		peaks := 0
+		if sim >= 0.930 {
+			peaks = 1
+		}
+		return neuralMatch{avg: sim, peakCount: peaks, maxScore: sim, overlap: 1}, true
 	}
 
 	leftOrder := temporalSampleOrder(n)
@@ -570,31 +605,60 @@ func (e *ComparisonEngine) neuralSimilarity(a, b [][]float32) (float64, bool) {
 		}
 	}
 
-	best := 0.0
+	bestAvg := -2.0
+	bestPeakCount := 0
+	bestMax := -2.0
+	bestOverlap := 0
+	found := false
+
 	for offset := -n + 1; offset <= m-1; offset++ {
 		total := 0.0
 		count := 0
+		peakCount := 0
+		maxScore := -2.0
+
 		for li, sourceI := range leftOrder {
 			rj := li + offset
 			if rj < 0 || rj >= m {
 				continue
 			}
+			var sim float64
 			if sourceI < 16 && rightOrder[rj] < 16 {
-				total += matrix[sourceI][rightOrder[rj]]
+				sim = matrix[sourceI][rightOrder[rj]]
 			} else {
-				total += neural.CosineSimilarity(a[sourceI], b[rightOrder[rj]])
+				sim = neural.CosineSimilarity(a[sourceI], b[rightOrder[rj]])
 			}
+			total += sim
 			count++
+			if sim > maxScore {
+				maxScore = sim
+			}
+			// Raw cosine >= 0.930 corresponds to normalized similarity >= 96.5%
+			if sim >= 0.930 {
+				peakCount++
+			}
 		}
 		if count < minOverlap {
 			continue
 		}
 		avg := total / float64(count)
-		if avg > best {
-			best = avg
+		if avg > bestAvg || (avg == bestAvg && peakCount > bestPeakCount) {
+			bestAvg = avg
+			bestPeakCount = peakCount
+			bestMax = maxScore
+			bestOverlap = count
+			found = true
 		}
 	}
-	return best, best != 0
+	if !found {
+		return neuralMatch{}, false
+	}
+	return neuralMatch{
+		avg:       bestAvg,
+		peakCount: bestPeakCount,
+		maxScore:  bestMax,
+		overlap:   bestOverlap,
+	}, true
 }
 
 func bestTemporalAlignmentScore(n, m int, scoreAt func(i, j int) float64) float64 {

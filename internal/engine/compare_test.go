@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"vdfusion/internal/config"
@@ -273,6 +274,141 @@ func TestTrimTolerantAlignment(t *testing.T) {
 		}
 		if local3.neuralGateSkip != 0 {
 			t.Fatalf("expected neuralGateSkip=0, got %d", local3.neuralGateSkip)
+		}
+	})
+}
+
+func makeUnitVec(c float32) []float32 {
+	v := make([]float32, 512)
+	v[0] = c
+	v[1] = float32(math.Sqrt(float64(1.0 - c*c)))
+	return v
+}
+
+func TestPeakFrameVerification(t *testing.T) {
+	e := NewComparisonEngine()
+	baseVec := makeUnitVec(1.0)
+
+	t.Run("Flat genre noise at 95.0% similarity is rejected at Percent=95", func(t *testing.T) {
+		// 16 frames where every frame has cosine similarity ~0.900 (normScore ~0.950).
+		// Zero frames reach the peak threshold (>= 0.930 / norm >= 0.965).
+		// This simulates unrelated videos in the same genre with similar color palette.
+		noiseVec := makeUnitVec(0.900)
+		timelineA := make([][]float32, 16)
+		timelineB := make([][]float32, 16)
+		for i := 0; i < 16; i++ {
+			timelineA[i] = baseVec
+			timelineB[i] = noiseVec
+		}
+		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineA)}
+		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineB)}
+
+		isDup, score := e.isDuplicate(&a, &b, config.Settings{Percent: 95})
+		if isDup {
+			t.Fatalf("expected isDup=false for flat genre noise without peak frames, got true with score=%v", score)
+		}
+		if score < 0.949 || score > 0.951 {
+			t.Fatalf("expected honest score ~0.950, got %v", score)
+		}
+	})
+
+	t.Run("Cross-quality duplicate (1440p vs 480p DivX) is accepted at Percent=96", func(t *testing.T) {
+		// 16 frames:
+		// 12 motion frames degraded by compression blur to cosine 0.86 (norm 0.930)
+		// 4 dialogue frames sharp at cosine 0.95 (norm 0.975)
+		// Overall average cosine = (12*0.86 + 4*0.95)/16 = 0.8825 -> normScore = 0.94125 (94.1%)
+		// User threshold = 96.0%. Under pure average, 94.1% < 96% would be missed.
+		// With 4 peak frames (>= 0.930) and normScore >= 0.940, it is accepted!
+		blurVec := makeUnitVec(0.860)
+		sharpVec := makeUnitVec(0.950)
+
+		timelineA := make([][]float32, 16)
+		timelineB := make([][]float32, 16)
+		for i := 0; i < 16; i++ {
+			timelineA[i] = baseVec
+			if i%4 == 0 { // 4 sharp frames (i = 0, 4, 8, 12)
+				timelineB[i] = sharpVec
+			} else { // 12 blurry frames
+				timelineB[i] = blurVec
+			}
+		}
+		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineA)}
+		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineB)}
+
+		isDup, score := e.isDuplicate(&a, &b, config.Settings{Percent: 96})
+		if !isDup {
+			t.Fatalf("expected isDup=true for cross-quality duplicate with 4 peak frames, got false with score=%v", score)
+		}
+		if score < 0.940 || score > 0.955 {
+			t.Fatalf("expected honest score between 0.940 and 0.955, got %v", score)
+		}
+	})
+
+	t.Run("Cross-quality duplicate with trimmed intro is accepted", func(t *testing.T) {
+		// Video A: 16 frames (4 intro frames + 12 content frames)
+		// Video B: 12 frames (only the 12 content frames, intro trimmed)
+		// In the 12 content frames: 4 sharp frames (cosine 0.95), 8 blurry frames (cosine 0.86)
+		// Average in aligned window = (8*0.86 + 4*0.95)/12 = 0.890 -> normScore = 0.945 (94.5%)
+		// User threshold = 96.0%.
+		introVec := makeUnitVec(0.200) // Unrelated intro
+		blurVec := makeUnitVec(0.860)
+		sharpVec := makeUnitVec(0.950)
+
+		timelineA := make([][]float32, 16)
+		timelineB := make([][]float32, 12)
+
+		// A: 4 intro frames
+		for i := 0; i < 4; i++ {
+			timelineA[i] = introVec
+		}
+		// A: 12 content frames
+		for i := 0; i < 12; i++ {
+			timelineA[4+i] = baseVec
+		}
+		// B: 12 content frames
+		for i := 0; i < 12; i++ {
+			if i%3 == 0 { // 4 sharp frames (i = 0, 3, 6, 9)
+				timelineB[i] = sharpVec
+			} else {
+				timelineB[i] = blurVec
+			}
+		}
+
+		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineA)}
+		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineB)}
+
+		isDup, score := e.isDuplicate(&a, &b, config.Settings{Percent: 96})
+		if !isDup {
+			t.Fatalf("expected isDup=true for cut duplicate with peak frames, got false with score=%v", score)
+		}
+		if score < 0.940 || score > 0.955 {
+			t.Fatalf("expected honest score between 0.940 and 0.955, got %v", score)
+		}
+	})
+
+	t.Run("Noise below 94.0% floor is rejected even with peaks", func(t *testing.T) {
+		// 16 frames: 14 low frames at cosine 0.70 (norm 0.850), 2 peak frames at 0.95
+		// Average cosine = (14*0.70 + 2*0.95)/16 = 0.73125 -> normScore = 0.8656
+		// User threshold = 90%. Even though 2 frames spike, average is well below 94.0% floor.
+		lowVec := makeUnitVec(0.700)
+		sharpVec := makeUnitVec(0.950)
+
+		timelineA := make([][]float32, 16)
+		timelineB := make([][]float32, 16)
+		for i := 0; i < 16; i++ {
+			timelineA[i] = baseVec
+			if i < 2 {
+				timelineB[i] = sharpVec
+			} else {
+				timelineB[i] = lowVec
+			}
+		}
+		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineA)}
+		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline(timelineB)}
+
+		isDup, _ := e.isDuplicate(&a, &b, config.Settings{Percent: 90})
+		if isDup {
+			t.Fatalf("expected isDup=false for noise below 94.0%% floor, got true")
 		}
 	})
 }
