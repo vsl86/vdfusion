@@ -91,6 +91,21 @@ func TestComparisonEngine(t *testing.T) {
 			settings:   config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2},
 			wantGroups: 0,
 		},
+		{
+			// Transitive chain: 1-2 match (dist 4 = 93.75% >= 90%), 2-3 match (dist 4 = 93.75% >= 90%).
+			// But 1-3 is dist 8 (87.5% < 90%).
+			// Reference file 1 should only keep file 2, dropping file 3.
+			name: "Transitive chain drops low similarity files from group",
+			records: []db.FileRecord{
+				{Path: "/f1.mp4", Size: 200, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x0000000000000000}},
+				{Path: "/f2.mp4", Size: 190, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x000000000000000F}},
+				{Path: "/f3.mp4", Size: 180, Duration: 10, Width: 1920, Height: 1080, PHashV2s: []uint64{0x00000000000000FF}},
+			},
+			ignored:     nil,
+			settings:    config.Settings{Percent: 90, PercentDurationDifference: 20, Thumbnails: 4, Concurrency: 2},
+			wantGroups:  1,
+			wantEachLen: []int{2},
+		},
 	}
 
 	e := NewComparisonEngine()
@@ -173,7 +188,7 @@ func TestIsDuplicate(t *testing.T) {
 	e := NewComparisonEngine()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isDup, score := e.isDuplicate(tt.a, tt.b, tt.settings)
+			isDup, score := e.isDuplicate(&tt.a, &tt.b, tt.settings)
 			if isDup != tt.wantIs {
 				t.Errorf("isDuplicate() isDup = %v, want %v", isDup, tt.wantIs)
 			}
@@ -190,7 +205,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 	t.Run("phash shifted by trimmed intro", func(t *testing.T) {
 		a := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{1, 2, 3, 4})}
 		b := db.FileRecord{PHashV2s: phashesFromTimeline([]uint64{99, 1, 2, 3, 4})}
-		if got := e.phashSimilarity(a, b); got != 1.0 {
+		if got := e.phashSimilarity(&a, &b); got != 1.0 {
 			t.Fatalf("phashSimilarity() = %v, want 1", got)
 		}
 	})
@@ -203,7 +218,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 		a := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{e1, e2, e3})}
 		b := db.FileRecord{NeuralEmbeddings: embeddingsFromTimeline([][]float32{other, e1, e2, e3})}
 
-		isDup, score := e.isDuplicate(a, b, config.Settings{Percent: 95})
+		isDup, score := e.isDuplicate(&a, &b, config.Settings{Percent: 95})
 		if !isDup {
 			t.Fatalf("isDuplicate() = false, want true; score=%v", score)
 		}
@@ -229,7 +244,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 1: Default gate at 60% -> 0.50 < 0.60 -> skipped by gate
 		local := &counters{}
-		isDup, _ := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 60}, local)
+		isDup, _ := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 60}, local)
 		if isDup {
 			t.Fatalf("expected isDup=false when phash < gate")
 		}
@@ -239,7 +254,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 2: Lowered gate at 40% -> 0.50 >= 0.40 -> passes gate and matches via neural
 		local2 := &counters{}
-		isDup2, score2 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 40}, local2)
+		isDup2, score2 := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 40}, local2)
 		if !isDup2 {
 			t.Fatalf("expected isDup=true when phash >= gate, got false with score=%v", score2)
 		}
@@ -252,7 +267,7 @@ func TestTrimTolerantAlignment(t *testing.T) {
 
 		// Case 3: Gate disabled at 0% -> passes gate and matches via neural
 		local3 := &counters{}
-		isDup3, score3 := e.isDuplicateWithStats(a, b, config.Settings{Percent: 90, NeuralPhashGate: 0}, local3)
+		isDup3, score3 := e.isDuplicateWithStats(&a, &b, config.Settings{Percent: 90, NeuralPhashGate: 0}, local3)
 		if !isDup3 {
 			t.Fatalf("expected isDup=true when gate is 0, got false with score=%v", score3)
 		}
@@ -313,5 +328,20 @@ func BenchmarkNeuralSimilarity(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		e.neuralSimilarity(vecA, vecB)
+	}
+}
+
+func BenchmarkPHashSimilarity(b *testing.B) {
+	e := NewComparisonEngine()
+	recA := db.FileRecord{PHashV2s: make([]uint64, 16)}
+	recB := db.FileRecord{PHashV2s: make([]uint64, 16)}
+	for i := range 16 {
+		recA.PHashV2s[i] = uint64(i * 0x123456789abcdef0)
+		recB.PHashV2s[i] = uint64(i * 0x0fedcba987654321)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		e.phashSimilarity(&recA, &recB)
 	}
 }

@@ -48,6 +48,7 @@ func (e *ComparisonEngine) getOrLoadEmbeddings(r *db.FileRecord) [][]float32 {
 	}
 	embs, err := e.db.GetNeuralEmbeddingsByID(r.ID)
 	if err != nil || len(embs) == 0 {
+		e.embCache.Store(r.ID, [][]float32(nil))
 		return nil
 	}
 	e.embCache.Store(r.ID, embs)
@@ -209,12 +210,12 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 				default:
 				}
 
-				r := records[i]
+				r := &records[i]
 				maxTolerance := e.getDurationTolerance(r.Duration, cfg)
 
 				pairsProcessedInLoop := 0
 				for j := i + 1; j < len(records); j++ {
-					comp := records[j]
+					comp := &records[j]
 					diffSeconds := comp.Duration - r.Duration
 					if diffSeconds > maxTolerance {
 						break
@@ -292,7 +293,10 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 		}
 
 		if !hasIgnored {
-			results = append(results, e.buildGroup(cluster, records, cfg))
+			g := e.buildGroup(cluster, records, cfg)
+			if len(g.Files) >= 2 {
+				results = append(results, g)
+			}
 		} else {
 			covered := make(map[int]bool)
 			for _, start := range cluster {
@@ -323,7 +327,10 @@ func (e *ComparisonEngine) Compare(ctx context.Context, records []db.FileRecord,
 				}
 				if len(group) > 1 {
 					covered[start] = true
-					results = append(results, e.buildGroup(group, records, cfg))
+					g := e.buildGroup(group, records, cfg)
+					if len(g.Files) >= 2 {
+						results = append(results, g)
+					}
 				}
 			}
 		}
@@ -349,7 +356,7 @@ type counters struct {
 	maxSim         float64
 }
 
-func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings) bool {
+func (e *ComparisonEngine) comparePair(r, comp *db.FileRecord, i, j int, maxTol float64, ignoredPairs map[string]map[string]bool, local *counters, edges chan [2]int, cfg config.Settings) bool {
 	diff := math.Abs(comp.Duration - r.Duration)
 	hashI := r.GetIdentifierHash()
 	hashJ := comp.GetIdentifierHash()
@@ -377,13 +384,10 @@ func (e *ComparisonEngine) comparePair(r, comp db.FileRecord, i, j int, maxTol f
 
 func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cfg config.Settings) DuplicateGroup {
 	sort.Ints(cluster)
-	var gID strings.Builder
 	var fileInfos []FileInfo
 	bestIdx := 0
 	for i, idx := range cluster {
-		r := records[idx]
-		gID.WriteString(r.Path)
-		gID.WriteString("|")
+		r := &records[idx]
 		fileInfos = append(fileInfos, FileInfo{
 			Path: r.Path, Size: r.Size, Duration: r.Duration, Width: r.Width, Height: r.Height,
 			IdentifierHash: r.GetIdentifierHash(), Codec: r.Codec, Bitrate: r.Bitrate, FPS: r.FPS, Similarity: 100.0,
@@ -392,15 +396,31 @@ func (e *ComparisonEngine) buildGroup(cluster []int, records []db.FileRecord, cf
 			bestIdx = i
 		}
 	}
-	refRecord := records[cluster[bestIdx]]
+	refRecord := &records[cluster[bestIdx]]
+	validFiles := []FileInfo{fileInfos[bestIdx]}
 	for i := range fileInfos {
 		if i == bestIdx {
 			continue
 		}
-		_, score := e.isDuplicate(refRecord, records[cluster[i]], cfg)
-		fileInfos[i].Similarity = score * 100.0
+		isDup, score := e.isDuplicate(refRecord, &records[cluster[i]], cfg)
+		if isDup {
+			fi := fileInfos[i]
+			fi.Similarity = score * 100.0
+			validFiles = append(validFiles, fi)
+		}
 	}
-	return DuplicateGroup{ID: gID.String(), Files: fileInfos}
+
+	if len(validFiles) < 2 {
+		return DuplicateGroup{}
+	}
+
+	var gID strings.Builder
+	for _, fi := range validFiles {
+		gID.WriteString(fi.Path)
+		gID.WriteString("|")
+	}
+
+	return DuplicateGroup{ID: gID.String(), Files: validFiles}
 }
 
 func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Settings) float64 {
@@ -416,11 +436,11 @@ func (e *ComparisonEngine) getDurationTolerance(duration float64, cfg config.Set
 	return tolerance
 }
 
-func (e *ComparisonEngine) isDuplicate(a, b db.FileRecord, cfg config.Settings) (bool, float64) {
+func (e *ComparisonEngine) isDuplicate(a, b *db.FileRecord, cfg config.Settings) (bool, float64) {
 	return e.isDuplicateWithStats(a, b, cfg, nil)
 }
 
-func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.Settings, local *counters) (bool, float64) {
+func (e *ComparisonEngine) isDuplicateWithStats(a, b *db.FileRecord, cfg config.Settings, local *counters) (bool, float64) {
 	required := cfg.Percent / 100.0
 	phashScore := e.phashSimilarity(a, b)
 
@@ -435,8 +455,8 @@ func (e *ComparisonEngine) isDuplicateWithStats(a, b db.FileRecord, cfg config.S
 		return false, phashScore
 	}
 
-	aEmbs := e.getOrLoadEmbeddings(&a)
-	bEmbs := e.getOrLoadEmbeddings(&b)
+	aEmbs := e.getOrLoadEmbeddings(a)
+	bEmbs := e.getOrLoadEmbeddings(b)
 
 	if len(aEmbs) > 0 && len(bEmbs) > 0 {
 		score, ok := e.neuralSimilarity(aEmbs, bEmbs)
@@ -471,7 +491,7 @@ func init() {
 	}
 }
 
-func (e *ComparisonEngine) phashSimilarity(a, b db.FileRecord) float64 {
+func (e *ComparisonEngine) phashSimilarity(a, b *db.FileRecord) float64 {
 	n := len(a.PHashV2s)
 	m := len(b.PHashV2s)
 	if n == 0 || m == 0 {
